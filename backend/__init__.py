@@ -1,0 +1,1 @@
+"""StatStriker backend package."""
