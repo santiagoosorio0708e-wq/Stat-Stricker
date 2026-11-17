@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="StatStriker: análisis de fútbol, partidos y ligas en un solo lugar." />
+  <meta name="theme-color" content="#06251f" />
+  <title>StatStriker · Centro de análisis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="dashboard">
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#inicio" aria-label="StatStriker, inicio">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M22.8 4.2H11.4c-3.2 0-5.7 2-6.4 5.1L2.2 22.1c-.8 3.4 1.3 5.7 4.7 5.7h3.7l1.3-6.1h-2l1-4.5h6l1-4.5h-6.1l.7-3.1h9.6l.8-5.4Z"/><path d="M14.7 27.8h5.2l2.7-12.2h5.2l1-4.6H17.3l-1 4.6h2.5l-4.1 12.2Z"/></svg></span>
+        <span class="brand-name">Stat<span>Striker</span></span>
+      </a>
+      <nav class="main-nav" aria-label="Navegación principal">
+        <a class="nav-link active" href="#chat">Chat Predictivo</a>
+        <a class="nav-link" href="#marcadores">Marcadores en Vivo</a>
+        <a class="nav-link" href="#equipos">Próximos Partidos</a>
+        <a class="nav-link" href="#equipos">Estadísticas Avanzadas</a>
+        <a class="nav-link" href="#ligas">Mi Perfil (Ligas)</a>
+      </nav>
+      <button class="profile-button" type="button" aria-label="Perfil de usuario">♙ <span>⌄</span></button>
+    </header>
+
+    <main class="dashboard-grid" id="inicio">
+      <aside class="left-column" id="ligas">
+        <section class="surface preferences-card">
+          <div class="section-heading"><h2>Preferencias</h2><button class="switch" type="button" aria-label="Preferencias activadas"><span></span></button></div>
+          <p class="eyebrow">Personaliza tu experiencia</p>
+          <label class="search-box"><span>⌕</span><input id="team-search" type="search" placeholder="Buscar equipo…" autocomplete="off" /></label>
+          <div class="section-heading league-heading"><h3>Ligas</h3><span class="count" id="league-count">5</span></div>
+          <div class="league-list" id="league-list" aria-label="Seleccionar liga"></div>
+        </section>
+        <section class="surface catalog-card" id="equipos">
+          <div class="section-heading"><div><p class="eyebrow">Catálogo completo</p><h2 id="teams-title">Equipos</h2></div><span class="count" id="team-count">—</span></div>
+          <p class="catalog-note" id="catalog-note">Elige una liga para ver sus equipos.</p>
+          <div class="team-list" id="team-list" aria-live="polite"><div class="loading-state"><span class="loader"></span> Cargando equipos…</div></div>
+        </section>
+      </aside>
+
+      <section class="surface chat-panel" id="chat">
+        <header class="chat-heading">
+          <div><p class="eyebrow">Tu asistente de fútbol</p><h1>Chatbot Predictivo</h1></div>
+          <span class="connection-state"><i></i><span id="provider-label">Conectando…</span></span>
+          <button class="btn-icon mobile-menu" id="btn-menu" type="button" aria-label="Abrir ligas">☰</button>
+        </header>
+        <div class="messages" id="messages" aria-live="polite">
+          <article class="msg msg--bot"><div class="msg__avatar">S</div><div class="msg__bubble"><p>¡Hola! Soy <strong>StatStriker</strong>, tu analista de datos deportivos.</p><p>Cuéntame tu propuesta de apuesta y la evaluaré con estadísticas, enfrentamientos, contexto y riesgo.</p></div></article>
+        </div>
+        <div class="quick-prompts"><div class="section-heading"><p class="eyebrow">Prueba preguntando</p><span class="muted">Ideas rápidas</span></div>
+          <div class="chips" id="chips">
+            <button class="chip" type="button">Real Madrid y más de 2.5 goles</button>
+            <button class="chip" type="button">¿Ambos marcan en el City vs Liverpool?</button>
+            <button class="chip" type="button">Analiza el próximo Clásico</button>
+          </div>
+        </div>
+        <form class="composer" id="composer" autocomplete="off">
+          <textarea id="input" rows="1" maxlength="1000" placeholder="Escribe tu propuesta de apuesta…" required></textarea>
+          <button class="send-button" id="btn-send" type="submit" aria-label="Enviar análisis"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 9-18 9 3-8 9-1-9-1-3-8Z"/></svg></button>
+        </form>
+        <p class="responsible-note">+18 · Juega con responsabilidad. Los análisis son probabilísticos y no garantizan resultados.</p>
+      </section>
+
+      <aside class="right-column">
+        <section class="surface scores-card" id="marcadores">
+          <div class="section-heading"><div><p class="eyebrow">Agenda de fútbol</p><h2>Partidos destacados</h2></div><span class="live-indicator"><i></i> DATA</span></div>
+          <div class="matches" id="matches"><div class="loading-state"><span class="loader"></span> Cargando partidos…</div></div>
+          <p class="data-caption">Calendario de ejemplo del proyecto</p>
+        </section>
+        <section class="surface form-card">
+          <div class="section-heading"><div><p class="eyebrow">Lectura rápida</p><h2>Forma del equipo</h2></div><span class="icon-bubble">↗</span></div>
+          <div class="form-summary"><div class="form-score"><strong>5</strong><span>jornadas</span></div><div><div class="form-pills" aria-label="Leyenda de resultados"><span class="win">V</span><span class="win">V</span><span class="draw">E</span><span class="win">V</span><span class="loss">D</span></div><p class="muted">Selecciona un equipo para iniciar tu análisis.</p></div></div>
+          <div class="form-bars" aria-hidden="true"><span style="--bar:34%"></span><span style="--bar:64%"></span><span style="--bar:44%"></span><span style="--bar:82%"></span><span style="--bar:54%"></span><span style="--bar:72%"></span><span style="--bar:40%"></span><span style="--bar:60%"></span></div>
+          <div class="form-legend"><span>Últimos partidos</span><span>Estadísticas ilustrativas</span></div>
+        </section>
+        <section class="surface status-card" aria-label="Estado del servicio">
+          <div class="section-heading"><h2>Estado del servicio</h2><span class="icon-bubble">⌁</span></div>
+          <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li></ul>
+        </section>
+      </aside>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
