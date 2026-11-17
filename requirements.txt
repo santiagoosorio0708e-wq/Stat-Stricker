@@ -1,0 +1,20 @@
+# ============================================================
+# StatStriker - Dependencias del proyecto
+# Instalar con:  pip install -r requirements.txt
+# ============================================================
+
+# --- API REST (Backend) ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# --- Configuración segura (variables de entorno desde .env) ---
+python-dotenv>=1.0.1
+
+# --- Base de datos vectorial (Búsqueda Semántica) ---
+# Incluye un modelo de embeddings local (all-MiniLM-L6-v2 vía ONNX).
+chromadb>=0.5.0
+
+# --- Proveedores LLM / Embeddings (se usa el configurado en .env) ---
+google-genai>=3.2.0
+openai>=1.40.0
