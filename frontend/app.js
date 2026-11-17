@@ -1,6 +1,7 @@
 "use strict";
 
 const API_BASE = location.protocol === "file:" || (location.port && location.port !== "8000") ? "http://127.0.0.1:8000" : "";
+const LIVE_API = "https://sportscore.com/api/widget";
 const SESSION_KEY = "statstriker_session";
 const CATALOG_KEY = "statstriker_team_catalog_v1";
 const CATALOG_TTL = 12 * 60 * 60 * 1000;
@@ -37,6 +38,12 @@ let selectedLeague = LEAGUES[0];
 let catalog = {};
 let latestMatches = [];
 let busy = false;
+let liveMatches = [];
+let liveFilter = "live";
+let liveRefreshTimer = null;
+let selectedLiveSlug = "";
+let selectedLiveDetails = null;
+let liveFeedFresh = false;
 
 function newSessionId() { return crypto.randomUUID ? crypto.randomUUID() : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function escapeHtml(value) { return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
@@ -203,6 +210,155 @@ function useMatch(event) { const card = event.target.closest(".match-card"); if 
 els.matches.addEventListener("click", useMatch);
 els.matches.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); useMatch(event); } });
 els.menu.addEventListener("click", () => $("#ligas").scrollIntoView({ behavior: "smooth", block: "start" }));
+
+function setView(view) {
+  const isLive = view === "live";
+  $("#home-view").hidden = isLive;
+  $("#live-view").hidden = !isLive;
+  document.querySelectorAll(".main-nav [data-view]").forEach((link) => link.classList.toggle("active", link.dataset.view === view));
+  if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null; }
+  if (isLive) {
+    loadLiveMatches();
+    liveRefreshTimer = setInterval(loadLiveMatches, 60_000);
+  }
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+document.querySelectorAll("[data-view]").forEach((control) => control.addEventListener("click", (event) => {
+  const view = control.dataset.view;
+  if (!view) return;
+  event.preventDefault();
+  setView(view);
+}));
+
+function liveStatus(match) {
+  return `${match.status || ""} ${match.status_text || ""}`.trim().toLocaleLowerCase("en");
+}
+function statusIndicatesLive(match) {
+  const status = liveStatus(match);
+  if (/finished|full.?time|\bft\b|ended|cancelled|postponed|not started/.test(status)) return false;
+  return /live|in.?play|progress|half.?time|\bht\b|extra.?time|penalt|\d{1,3}(?:\+\d+)?\s*['’]/.test(status);
+}
+function isLive(match) { return liveFeedFresh && statusIndicatesLive(match); }
+function isFinished(match) { return /finished|full.?time|\bft\b|ended/.test(liveStatus(match)); }
+function matchSlug(match) {
+  if (match.slug) return String(match.slug);
+  const parts = String(match.url || "").split("/").filter(Boolean);
+  return parts.length >= 4 ? parts[parts.length - 2] : "";
+}
+function formatMatchClock(match) {
+  const status = String(match.status_text || "").trim();
+  if (!liveFeedFresh && statusIndicatesLive(match)) return "Datos demorados";
+  if (status) return status;
+  if (isLive(match)) return "EN JUEGO";
+  if (isFinished(match)) return "FINAL";
+  if (match.time) return new Date(match.time).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
+  return "—";
+}
+function renderLiveMatches() {
+  const filtered = liveMatches.filter((match) => liveFilter === "live" ? isLive(match) : liveFilter === "finished" ? isFinished(match) : true);
+  $("#live-match-count").textContent = String(filtered.length);
+  $("#live-feed-title").textContent = liveFilter === "live" ? "En directo ahora" : liveFilter === "finished" ? "Partidos finalizados" : "Todos los partidos";
+  if (!filtered.length) {
+    const copy = liveFilter === "live"
+      ? "No se encontraron partidos en juego en este momento. Los marcadores se actualizarán automáticamente."
+      : "No hay partidos para mostrar en esta categoría.";
+    $("#live-matches").innerHTML = `<div class="live-empty"><span class="stat-ring">⚽</span><strong>${liveFilter === "live" ? "Sin partidos en directo" : "Sin resultados"}</strong><p>${copy}</p></div>`;
+    return;
+  }
+  $("#live-matches").innerHTML = filtered.map((match) => {
+    const slug = matchSlug(match);
+    const selected = slug && slug === selectedLiveSlug;
+    const clock = formatMatchClock(match);
+    const live = isLive(match);
+    const homeLogo = safeImage(match.home_logo), awayLogo = safeImage(match.away_logo), leagueLogo = safeImage(match.competition_logo);
+    return `<article class="live-match-card ${selected ? "selected" : ""}" tabindex="0" role="button" data-live-slug="${escapeHtml(slug)}" aria-label="Ver ${escapeHtml(match.home)} contra ${escapeHtml(match.away)}"><div class="live-card-league">${leagueLogo ? `<img src="${leagueLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽"}<span>${escapeHtml(match.competition || "Fútbol")}</span></div><div class="live-card-score"><div class="live-card-team">${homeLogo ? `<img src="${homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.home || "?").slice(0,1))}</span>`}<span>${escapeHtml(match.home || "Local")}</span></div><div class="live-score">${escapeHtml(match.home_score ?? "–")} - ${escapeHtml(match.away_score ?? "–")}<small class="live-status ${isFinished(match) ? "finished" : live ? "" : "scheduled"}">${escapeHtml(clock)}</small></div><div class="live-card-team away">${awayLogo ? `<img src="${awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.away || "?").slice(0,1))}</span>`}<span>${escapeHtml(match.away || "Visitante")}</span></div></div><div class="live-card-footer"><span>${live ? "● EN DIRECTO" : isFinished(match) ? "JORNADA FINALIZADA" : "PARTIDO"}</span><strong>${escapeHtml(clock)}</strong></div></article>`;
+  }).join("");
+}
+function statLabel(name) {
+  return String(name || "Estadística").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]/g, " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+function detailsStats(details) {
+  const raw = details.statistics || details.stats || details.match?.statistics || details.match?.stats;
+  if (Array.isArray(raw)) return raw.map((item) => ({ name: item.name || item.type || item.label, home: item.home ?? item.home_value ?? item.homeValue, away: item.away ?? item.away_value ?? item.awayValue })).filter((item) => item.home != null || item.away != null).slice(0, 7);
+  if (raw && typeof raw === "object") return Object.entries(raw).map(([name, values]) => ({ name, home: values?.home ?? values?.home_value, away: values?.away ?? values?.away_value })).filter((item) => item.home != null || item.away != null).slice(0, 7);
+  return [];
+}
+function detailsTimeline(details) {
+  const raw = details.timeline || details.events || details.incidents || details.match?.timeline || details.match?.events;
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(-6).reverse().map((item) => ({ time: item.time || item.minute || item.elapsed || "–", text: item.text || item.description || item.event || item.type || "Evento del partido" }));
+}
+function renderLiveDetails(match, details = null) {
+  if (!match) {
+    $("#live-details").innerHTML = `<div class="live-empty compact"><span class="stat-ring">⚽</span><p>Elige un partido para consultar sus detalles.</p></div>`;
+    return;
+  }
+  const homeLogo = safeImage(match.home_logo), awayLogo = safeImage(match.away_logo);
+  const [homeLogoMarkup, awayLogoMarkup] = [homeLogo, awayLogo].map((logo) => logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽");
+  const stats = details ? detailsStats(details) : [];
+  const timeline = details ? detailsTimeline(details) : [];
+  const statsMarkup = stats.length ? `<h3 class="detail-section-title">Estadísticas del partido</h3>${stats.map((stat) => `<div class="stat-row"><span>${escapeHtml(stat.home ?? "—")}</span><strong>${escapeHtml(statLabel(stat.name))}</strong><span>${escapeHtml(stat.away ?? "—")}</span></div>`).join("")}` : `<p class="detail-unavailable">${details ? "El proveedor aún no ofrece estadísticas para este encuentro." : "Consultando los datos disponibles del partido…"}</p>`;
+  const eventsMarkup = timeline.length ? `<h3 class="detail-section-title">Últimos eventos</h3><ul class="event-list">${timeline.map((event) => `<li><time>${escapeHtml(event.time)}</time><span>${escapeHtml(event.text)}</span></li>`).join("")}</ul>` : "";
+  $("#live-details").innerHTML = `<h3 class="selected-match-title">${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</h3><p class="selected-match-comp">${escapeHtml(match.competition || "Fútbol")} · ${escapeHtml(formatMatchClock(match))}</p><div class="detail-score">${homeLogoMarkup}<strong>${escapeHtml(match.home_score ?? "–")} : ${escapeHtml(match.away_score ?? "–")}</strong>${awayLogoMarkup}</div><div class="detail-team-names"><span>${escapeHtml(match.home)}</span><span>${escapeHtml(match.away)}</span></div>${statsMarkup}${eventsMarkup}`;
+}
+async function loadLiveDetails(slug) {
+  const match = liveMatches.find((item) => matchSlug(item) === slug);
+  selectedLiveSlug = slug;
+  selectedLiveDetails = null;
+  renderLiveMatches();
+  renderLiveDetails(match);
+  if (!slug) return;
+  try {
+    const response = await fetch(`${LIVE_API}/match/?sport=football&slug=${encodeURIComponent(slug)}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (selectedLiveSlug === slug) { selectedLiveDetails = payload.match || payload; renderLiveDetails(match, selectedLiveDetails); }
+  } catch {
+    if (selectedLiveSlug === slug) { selectedLiveDetails = {}; renderLiveDetails(match, selectedLiveDetails); }
+  }
+}
+async function loadLiveMatches() {
+  const refreshButton = $("#live-refresh");
+  refreshButton.classList.add("is-loading");
+  try {
+    const response = await fetch(`${LIVE_API}/matches/?sport=football&limit=50&src=statstriker`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    liveMatches = Array.isArray(payload.matches) ? payload.matches : [];
+    const updated = payload.updated ? new Date(payload.updated) : null;
+    const fresh = updated && Date.now() - updated.getTime() < 5 * 60 * 1000;
+    liveFeedFresh = !updated || (fresh && !Number.isNaN(updated.valueOf()));
+    $("#live-updated").textContent = updated && !Number.isNaN(updated.valueOf())
+      ? `${fresh ? "Actualizado" : "Feed demorado"}: ${updated.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}`
+      : "Marcador actualizado";
+    renderLiveMatches();
+    if (selectedLiveSlug) {
+      const selected = liveMatches.find((match) => matchSlug(match) === selectedLiveSlug);
+      if (selected) renderLiveDetails(selected, selectedLiveDetails);
+    }
+  } catch {
+    liveFeedFresh = false;
+    $("#live-updated").textContent = "Fuente de marcador no disponible";
+    $("#live-matches").innerHTML = `<div class="live-empty"><strong>No se pudo cargar el marcador</strong><p>Revisa tu conexión e inténtalo de nuevo. Los marcadores no se sustituyen por datos simulados.</p><button class="refresh-button" type="button" data-live-retry>Reintentar</button></div>`;
+  } finally { refreshButton.classList.remove("is-loading"); }
+}
+$("#live-filter").addEventListener("change", (event) => { liveFilter = event.target.value; renderLiveMatches(); });
+$("#live-refresh").addEventListener("click", loadLiveMatches);
+$("#live-matches").addEventListener("click", (event) => { const card = event.target.closest("[data-live-slug]"); if (card) loadLiveDetails(card.dataset.liveSlug); });
+$("#live-matches").addEventListener("click", (event) => { if (event.target.closest("[data-live-retry]")) loadLiveMatches(); });
+$("#live-matches").addEventListener("keydown", (event) => { const card = event.target.closest("[data-live-slug]"); if (card && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); loadLiveDetails(card.dataset.liveSlug); } });
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.closest(".live-view")) return;
+  const fallback = document.createElement("span"); fallback.className = "team-placeholder"; fallback.textContent = "⚽"; image.replaceWith(fallback);
+}, true);
+document.querySelectorAll(".main-nav .nav-link:not([data-view])").forEach((link) => link.addEventListener("click", (event) => {
+  if (!$("#home-view").hidden) return;
+  event.preventDefault();
+  const target = link.getAttribute("href");
+  setView("home");
+  window.setTimeout(() => document.querySelector(target)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+}));
 
 renderLeagues();
 (async () => { await loadHealth(); await Promise.all([loadLeague(selectedLeague.id), loadMatches(), loadHistory()]); })();

@@ -19,8 +19,8 @@
         <span class="brand-name">Stat<span>Striker</span></span>
       </a>
       <nav class="main-nav" aria-label="Navegación principal">
-        <a class="nav-link active" href="#chat">Chat Predictivo</a>
-        <a class="nav-link" href="#marcadores">Marcadores en Vivo</a>
+        <a class="nav-link active" href="#chat" data-view="home">Chat Predictivo</a>
+        <a class="nav-link" href="#live-view" data-view="live">Marcadores en Vivo</a>
         <a class="nav-link" href="#equipos">Próximos Partidos</a>
         <a class="nav-link" href="#equipos">Estadísticas Avanzadas</a>
         <a class="nav-link" href="#ligas">Mi Perfil (Ligas)</a>
@@ -28,7 +28,8 @@
       <button class="profile-button" type="button" aria-label="Perfil de usuario">♙ <span>⌄</span></button>
     </header>
 
-    <main class="dashboard-grid" id="inicio">
+    <main id="inicio">
+    <section class="dashboard-grid" id="home-view">
       <aside class="left-column" id="ligas">
         <section class="surface preferences-card">
           <div class="section-heading"><h2>Preferencias</h2><button class="switch" type="button" aria-label="Preferencias activadas"><span></span></button></div>
@@ -84,6 +85,36 @@
           <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li></ul>
         </section>
       </aside>
+    </section>
+
+    <section class="live-view" id="live-view" hidden aria-labelledby="live-title">
+      <aside class="live-rail" aria-label="Secciones de partidos">
+        <button class="rail-button" type="button" data-view="home" aria-label="Volver al chat">◉</button>
+        <button class="rail-button" type="button" aria-label="Ligas">◎</button>
+        <button class="rail-button active" type="button" aria-label="Partidos en vivo">◉<span class="rail-pulse"></span></button>
+        <button class="rail-button" type="button" aria-label="Configuración">⚙</button>
+      </aside>
+      <section class="live-center surface">
+        <header class="live-toolbar">
+          <div class="live-heading"><h1 id="live-title">Partidos en Vivo</h1><span class="live-glow" aria-label="Actualizaciones automáticas"></span></div>
+          <div class="live-tools">
+            <span class="live-updated" id="live-updated">Conectando marcador…</span>
+            <select id="live-filter" aria-label="Filtrar partidos"><option value="live">Partidos en juego</option><option value="all">Todos los partidos</option><option value="finished">Finalizados</option></select>
+            <button class="refresh-button" type="button" id="live-refresh" aria-label="Actualizar partidos">↻</button>
+          </div>
+        </header>
+        <div class="live-content">
+          <div class="live-feed-heading"><div><p class="eyebrow">Marcador de fútbol</p><h2 id="live-feed-title">En directo ahora</h2></div><span class="count" id="live-match-count">0</span></div>
+          <div class="live-matches-grid" id="live-matches" aria-live="polite"><div class="live-empty"><span class="loader"></span><p>Cargando partidos en vivo…</p></div></div>
+          <div class="live-feed-footer"><span>Actualización automática cada minuto</span><a href="https://sportscore.com/" target="_blank" rel="dofollow noopener">Datos deportivos: SportScore</a></div>
+        </div>
+      </section>
+      <aside class="live-insights surface">
+        <div class="insights-header"><div><p class="eyebrow">Análisis del partido</p><h2>Estadísticas en Tiempo Real</h2></div><span class="insights-live"><i></i> LIVE</span></div>
+        <div id="live-details" class="live-details"><div class="live-empty compact"><span class="stat-ring">⚽</span><p>Elige un partido para consultar sus detalles.</p></div></div>
+        <a class="sportscore-credit" href="https://sportscore.com/" target="_blank" rel="dofollow noopener">Powered by SportScore</a>
+      </aside>
+    </section>
     </main>
   </div>
   <script src="app.js"></script>
