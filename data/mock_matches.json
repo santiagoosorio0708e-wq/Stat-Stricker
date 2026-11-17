@@ -1,0 +1,203 @@
+{
+  "metadata": {
+    "source": "StatStriker mock dataset (datos simulados con fines educativos)",
+    "generated_at": "2026-11-17",
+    "version": "1.0"
+  },
+  "matches": [
+    {
+      "match_id": "laliga-2026-rma-fcb",
+      "match_aliases": ["El Clásico", "Clásico"],
+      "competition": "LaLiga - Jornada 14",
+      "date": "2026-11-22",
+      "kickoff": "21:00 CET",
+      "venue": "Estadio Santiago Bernabéu, Madrid",
+      "referee": {
+        "name": "José Luis Munuera Montero",
+        "avg_yellow_cards": 5.1,
+        "avg_red_cards": 0.22,
+        "penalties_per_game": 0.31
+      },
+      "home_team": {
+        "name": "Real Madrid",
+        "aliases": ["Real Madrid", "Madrid", "Merengues", "RMA"],
+        "league_position": 1,
+        "recent_form": ["W", "W", "D", "W", "W"],
+        "last_5_results": [
+          "Real Madrid 3-1 Sevilla",
+          "Valencia 0-2 Real Madrid",
+          "Real Madrid 1-1 Atlético de Madrid",
+          "Real Madrid 4-0 Girona",
+          "Villarreal 1-3 Real Madrid"
+        ],
+        "goals_scored_avg": 2.6,
+        "goals_conceded_avg": 0.6,
+        "xg_for_avg": 2.31,
+        "xg_against_avg": 0.88,
+        "over_2_5_pct": 70,
+        "btts_pct": 50,
+        "clean_sheets_last_10": 5,
+        "corners_avg": 6.4,
+        "home_record_season": "6V 1E 0D",
+        "top_scorer": "Kylian Mbappé (11 goles)"
+      },
+      "away_team": {
+        "name": "FC Barcelona",
+        "aliases": ["FC Barcelona", "Barcelona", "Barça", "Barca", "FCB", "Culés"],
+        "league_position": 2,
+        "recent_form": ["W", "L", "W", "W", "D"],
+        "last_5_results": [
+          "FC Barcelona 4-1 Real Betis",
+          "Athletic Club 2-1 FC Barcelona",
+          "FC Barcelona 3-0 Osasuna",
+          "Real Sociedad 1-2 FC Barcelona",
+          "FC Barcelona 2-2 Celta de Vigo"
+        ],
+        "goals_scored_avg": 2.4,
+        "goals_conceded_avg": 1.2,
+        "xg_for_avg": 2.45,
+        "xg_against_avg": 1.15,
+        "over_2_5_pct": 80,
+        "btts_pct": 70,
+        "clean_sheets_last_10": 2,
+        "corners_avg": 7.1,
+        "away_record_season": "4V 1E 2D",
+        "top_scorer": "Robert Lewandowski (9 goles)"
+      },
+      "h2h": {
+        "last_5": [
+          "2026-04-19 | FC Barcelona 2-3 Real Madrid",
+          "2025-10-26 | Real Madrid 2-1 FC Barcelona",
+          "2025-05-11 | FC Barcelona 4-3 Real Madrid",
+          "2025-01-12 | Real Madrid 2-5 FC Barcelona (Supercopa)",
+          "2024-10-26 | Real Madrid 0-4 FC Barcelona"
+        ],
+        "summary": "Real Madrid 2 victorias, FC Barcelona 3 victorias, 0 empates. Media de 5.2 goles por partido en los últimos 5 H2H. Ambos marcaron en 4 de 5. Más de 2.5 goles en 5 de 5."
+      },
+      "injuries": {
+        "home": [
+          {"player": "Dani Carvajal", "position": "Lateral derecho", "status": "Baja (rotura de ligamento)", "impact": "Medio"},
+          {"player": "Eder Militão", "position": "Central", "status": "Duda (sobrecarga muscular)", "impact": "Alto"}
+        ],
+        "away": [
+          {"player": "Marc-André ter Stegen", "position": "Portero", "status": "Baja (lesión de espalda)", "impact": "Alto"},
+          {"player": "Gavi", "position": "Centrocampista", "status": "Disponible tras lesión, sin ritmo", "impact": "Bajo"}
+        ]
+      },
+      "weather": {
+        "condition": "Despejado",
+        "temperature_c": 9,
+        "wind_kmh": 8,
+        "precipitation_pct": 5,
+        "pitch": "Césped híbrido en perfecto estado (estadio con techo retráctil)"
+      },
+      "odds": {
+        "bookmaker_avg": true,
+        "1x2": {"home": 2.10, "draw": 3.80, "away": 3.20},
+        "over_2_5": 1.55,
+        "under_2_5": 2.40,
+        "btts_yes": 1.50,
+        "btts_no": 2.55,
+        "double_chance_1x": 1.33
+      },
+      "notes": "El Real Madrid llega con 9 partidos sin perder en casa. El Barcelona promedia la mayor posesión de la liga (64%) pero concede contragolpes. Ancelotti podría rotar por la Champions del miércoles."
+    },
+    {
+      "match_id": "epl-2026-mci-liv",
+      "match_aliases": ["Clásico de Inglaterra"],
+      "competition": "Premier League - Jornada 12",
+      "date": "2026-11-23",
+      "kickoff": "17:30 GMT",
+      "venue": "Etihad Stadium, Manchester",
+      "referee": {
+        "name": "Michael Oliver",
+        "avg_yellow_cards": 3.8,
+        "avg_red_cards": 0.10,
+        "penalties_per_game": 0.24
+      },
+      "home_team": {
+        "name": "Manchester City",
+        "aliases": ["Manchester City", "Man City", "City", "Citizens", "MCI"],
+        "league_position": 3,
+        "recent_form": ["L", "W", "D", "L", "W"],
+        "last_5_results": [
+          "Tottenham 2-1 Manchester City",
+          "Manchester City 3-0 Brentford",
+          "Aston Villa 1-1 Manchester City",
+          "Manchester City 0-1 Arsenal",
+          "Manchester City 2-0 Fulham"
+        ],
+        "goals_scored_avg": 1.6,
+        "goals_conceded_avg": 0.8,
+        "xg_for_avg": 2.05,
+        "xg_against_avg": 0.95,
+        "over_2_5_pct": 40,
+        "btts_pct": 40,
+        "clean_sheets_last_10": 4,
+        "corners_avg": 7.8,
+        "home_record_season": "4V 0E 2D",
+        "top_scorer": "Erling Haaland (10 goles)"
+      },
+      "away_team": {
+        "name": "Liverpool",
+        "aliases": ["Liverpool", "Reds", "LFC", "LIV"],
+        "league_position": 1,
+        "recent_form": ["W", "W", "W", "D", "W"],
+        "last_5_results": [
+          "Liverpool 2-0 Chelsea",
+          "Newcastle 1-2 Liverpool",
+          "Liverpool 3-1 West Ham",
+          "Brighton 2-2 Liverpool",
+          "Liverpool 1-0 Everton"
+        ],
+        "goals_scored_avg": 2.0,
+        "goals_conceded_avg": 0.8,
+        "xg_for_avg": 1.92,
+        "xg_against_avg": 1.02,
+        "over_2_5_pct": 60,
+        "btts_pct": 40,
+        "clean_sheets_last_10": 4,
+        "corners_avg": 5.9,
+        "away_record_season": "4V 2E 0D",
+        "top_scorer": "Mohamed Salah (8 goles)"
+      },
+      "h2h": {
+        "last_5": [
+          "2026-03-01 | Liverpool 2-0 Manchester City",
+          "2025-11-09 | Manchester City 3-0 Liverpool",
+          "2025-02-23 | Manchester City 0-2 Liverpool",
+          "2024-12-01 | Liverpool 2-0 Manchester City",
+          "2024-03-10 | Liverpool 1-1 Manchester City"
+        ],
+        "summary": "Liverpool 3 victorias, Manchester City 1 victoria, 1 empate. Media de 2.2 goles por partido. Ambos marcaron solo en 1 de 5. Más de 2.5 goles en 1 de 5."
+      },
+      "injuries": {
+        "home": [
+          {"player": "Rodri", "position": "Mediocentro defensivo", "status": "Baja (rodilla)", "impact": "Alto"},
+          {"player": "Rúben Dias", "position": "Central", "status": "Disponible", "impact": "Ninguno"}
+        ],
+        "away": [
+          {"player": "Alisson Becker", "position": "Portero", "status": "Duda (isquiotibiales)", "impact": "Medio"},
+          {"player": "Diogo Jota", "position": "Delantero", "status": "Baja", "impact": "Bajo"}
+        ]
+      },
+      "weather": {
+        "condition": "Lluvia moderada",
+        "temperature_c": 6,
+        "wind_kmh": 28,
+        "precipitation_pct": 85,
+        "pitch": "Césped pesado por la lluvia; viento racheado previsto en la segunda parte"
+      },
+      "odds": {
+        "bookmaker_avg": true,
+        "1x2": {"home": 2.25, "draw": 3.50, "away": 3.10},
+        "over_2_5": 1.80,
+        "under_2_5": 2.00,
+        "btts_yes": 1.72,
+        "btts_no": 2.05,
+        "double_chance_x2": 1.65
+      },
+      "notes": "El City atraviesa su peor racha en casa en años sin Rodri. El Liverpool de Slot es el equipo con menos goles encajados a domicilio. Partido clave por el título."
+    }
+  ]
+}
