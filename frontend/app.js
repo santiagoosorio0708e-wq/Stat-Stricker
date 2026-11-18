@@ -1,7 +1,9 @@
 "use strict";
 
 // Keep the UI connected to the active backend even if an older server is open on another port.
-const API_BASE = "http://127.0.0.1:8011";
+const API_BASE = window.location.port === "8011"
+  ? window.location.origin
+  : "http://127.0.0.1:8011";
 const SESSION_KEY = "statstriker_session";
 const CATALOG_KEY = "statstriker_team_catalog_v3";
 const CATALOG_TTL = 12 * 60 * 60 * 1000;
@@ -10,7 +12,7 @@ const FIXTURE_CACHE_TTL = 3 * 60 * 1000;
 const PROFILE_STORAGE_KEY = "statstriker_profile_v1";
 const AVATAR_STORAGE_KEY = "statstriker_profile_avatar_v1";
 const FAVORITE_TEAM_KEY = "statstriker_favorite_teams_v1";
-const FEATURED_LEAGUE_IDS = ["39", "140", "78", "135", "61", "2", "3", "13", "71", "253"];
+const FEATURED_LEAGUE_IDS = ["39", "140", "78", "135", "61", "2", "3", "13", "71", "253", "143"];
 let sessionId = localStorage.getItem(SESSION_KEY) || newSessionId();
 localStorage.setItem(SESSION_KEY, sessionId);
 
@@ -33,6 +35,7 @@ let LEAGUES = [
   { id: "13", name: "Copa Libertadores", country: "World", season: 2026, logo: "https://media.api-sports.io/football/leagues/13.png" },
   { id: "71", name: "Brasileir\u00e3o S\u00e9rie A", country: "Brazil", season: 2026, logo: "https://media.api-sports.io/football/leagues/71.png" },
   { id: "253", name: "MLS", country: "USA", season: 2026, logo: "https://media.api-sports.io/football/leagues/253.png" },
+  { id: "143", name: "Copa del Rey", country: "Spain", season: 2026, logo: "https://media.api-sports.io/football/leagues/143.png" },
 ];
 let COUNTRIES = [
   { id: "England", name: "Inglaterra", flag: "https://media.api-sports.io/flags/gb.svg" },
@@ -153,7 +156,7 @@ function renderChatFixtureCard(fixture) {
 
 function renderLeagues() {
   const query = $("#league-search")?.value.trim().toLocaleLowerCase("es") || "";
-  const filtered = LEAGUES.filter((league) => `${league.name} ${league.country || ""}`.toLocaleLowerCase("es").includes(query));
+  const filtered = LEAGUES.filter((league) => league.id !== "143" && `${league.name} ${league.country || ""}`.toLocaleLowerCase("es").includes(query));
   $("#league-count").textContent = String(filtered.length);
   els.leagueList.innerHTML = filtered.map((league) => {
     const image = safeImage(league.logo || league.country_flag);
@@ -220,6 +223,7 @@ async function loadFootballLeagues() {
     const selectedId = legacyIds[selectedLeague.id] || selectedLeague.id;
     favoriteLeagueIds = [...new Set(favoriteLeagueIds.map((id) => legacyIds[id] || id))].filter((id) => FEATURED_LEAGUE_IDS.includes(id));
     LEAGUES = leagues.map((league) => ({ ...league, id: String(league.id), flag: "", apiName: league.name }));
+    if (!LEAGUES.some((league) => league.id === "143")) LEAGUES.push({ id: "143", name: "Copa del Rey", country: "Spain", season: 2026, logo: "https://media.api-sports.io/football/leagues/143.png", flag: "" });
     if (!favoriteLeagueIds.length) favoriteLeagueIds = ["39", "140"];
     const countries = new Map();
     LEAGUES.forEach((league) => { if (league.country) countries.set(league.country, { id: league.country, name: league.country, flag: league.country_flag || "" }); });
@@ -504,7 +508,7 @@ function renderLiveMatches() {
   $("#live-feed-title").textContent = liveFilter === "live" ? "En directo ahora" : liveFilter === "finished" ? "Partidos finalizados" : "Todos los partidos";
   if (!filtered.length) {
     const copy = liveFilter === "live"
-      ? "No hay partidos en juego ahora en las 10 competiciones principales. Los marcadores se actualizarán automáticamente."
+      ? "No hay partidos en juego ahora en las competiciones seguidas. Los marcadores se actualizarán automáticamente."
       : "No hay partidos para mostrar en esta categoría.";
     $("#live-matches").innerHTML = `<div class="live-empty"><span class="stat-ring">⚽</span><strong>${liveFilter === "live" ? "Sin partidos en directo" : "Sin resultados"}</strong><p>${copy}</p></div>`;
     return;
@@ -532,6 +536,23 @@ function detailsTimeline(details) {
   if (!Array.isArray(raw)) return [];
   return raw.slice(-6).reverse().map((item) => ({ time: item.time || item.minute || item.elapsed || "–", text: item.text || item.description || item.event || item.type || "Evento del partido" }));
 }
+function renderLiveSimulation(match, details) {
+  if (!isLive(match)) return "";
+  const rawEvents = details && Array.isArray(details.events) ? details.events : [];
+  const events = rawEvents.map((event) => {
+    const text = String(event.text || "");
+    const minute = Number.parseInt(String(event.time || event.minute || "").match(/\d+/)?.[0] || "", 10);
+    const kind = /goal|gol|penalty|own goal/i.test(text) ? "goal" : /card|tarjeta/i.test(text) ? "card" : /subst|sustituci/i.test(text) ? "sub" : "event";
+    return { minute, text, kind };
+  }).filter((event) => Number.isFinite(event.minute));
+  const minute = Number(match.elapsed ?? String(match.status_text || "").match(/\d+/)?.[0] ?? 0);
+  const progress = Math.min(100, Math.max(0, minute / 90 * 100));
+  const markers = events.map((event) => `<span class="simulation-event ${event.kind}" style="left:${Math.min(100, Math.max(0, event.minute / 90 * 100))}%" title="${escapeHtml(`${event.minute}′ ${event.text}`)}">${event.kind === "goal" ? "⚽" : event.kind === "card" ? "▰" : "•"}</span>`).join("");
+  const eventList = events.length
+    ? events.slice(-4).reverse().map((event) => `<li><time>${event.minute}′</time><span>${escapeHtml(event.text)}</span></li>`).join("")
+    : `<li class="simulation-no-events">Aún no hay eventos registrados.</li>`;
+  return `<section class="live-simulation" aria-label="Simulación visual del partido"><div class="simulation-heading"><div><strong>Simulación del partido</strong><small>Marcador y eventos reportados por la API</small></div><span class="simulation-clock">${escapeHtml(match.status_text || `${minute}′`)}</span></div><div class="simulation-score"><span>${escapeHtml(match.home)}</span><strong>${escapeHtml(match.home_score ?? "–")} : ${escapeHtml(match.away_score ?? "–")}</strong><span>${escapeHtml(match.away)}</span></div><div class="simulation-timeline" role="img" aria-label="Partido en el minuto ${minute} de 90"><span>0′</span><div class="simulation-track"><i style="width:${progress}%"></i>${markers}<b style="left:${progress}%"></b></div><span>90′</span></div><ul class="simulation-events">${eventList}</ul><p>Vista gráfica del reloj y los eventos registrados. No es video ni muestra la ubicación real del balón.</p></section>`;
+}
 function renderLiveDetails(match, details = null) {
   if (!match) {
     $("#live-details").innerHTML = `<div class="live-empty compact"><span class="stat-ring">⚽</span><p>Elige un partido para consultar sus detalles.</p></div>`;
@@ -543,7 +564,7 @@ function renderLiveDetails(match, details = null) {
   const timeline = details ? detailsTimeline(details) : [];
   const statsMarkup = stats.length ? `<h3 class="detail-section-title">Estadísticas del partido</h3>${stats.map((stat) => `<div class="stat-row"><span>${escapeHtml(stat.home ?? "—")}</span><strong>${escapeHtml(statLabel(stat.name))}</strong><span>${escapeHtml(stat.away ?? "—")}</span></div>`).join("")}` : `<p class="detail-unavailable">${details ? "El proveedor aún no ofrece estadísticas para este encuentro." : "Consultando los datos disponibles del partido…"}</p>`;
   const eventsMarkup = timeline.length ? `<h3 class="detail-section-title">Últimos eventos</h3><ul class="event-list">${timeline.map((event) => `<li><time>${escapeHtml(event.time)}</time><span>${escapeHtml(event.text)}</span></li>`).join("")}</ul>` : "";
-  $("#live-details").innerHTML = `<h3 class="selected-match-title">${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</h3><p class="selected-match-comp">${escapeHtml(match.competition || "Fútbol")} · ${escapeHtml(formatMatchClock(match))}</p><div class="detail-score">${homeLogoMarkup}<strong>${escapeHtml(match.home_score ?? "–")} : ${escapeHtml(match.away_score ?? "–")}</strong>${awayLogoMarkup}</div><div class="detail-team-names"><span>${escapeHtml(match.home)}</span><span>${escapeHtml(match.away)}</span></div>${statsMarkup}${eventsMarkup}`;
+  $("#live-details").innerHTML = `<h3 class="selected-match-title">${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</h3><p class="selected-match-comp">${escapeHtml(match.competition || "Fútbol")} · ${escapeHtml(formatMatchClock(match))}</p><div class="detail-score">${homeLogoMarkup}<strong>${escapeHtml(match.home_score ?? "–")} : ${escapeHtml(match.away_score ?? "–")}</strong>${awayLogoMarkup}</div><div class="detail-team-names"><span>${escapeHtml(match.home)}</span><span>${escapeHtml(match.away)}</span></div>${statsMarkup}${eventsMarkup}${renderLiveSimulation(match, details)}`;
 }
 async function loadLiveDetails(slug) {
   const match = liveMatches.find((item) => matchSlug(item) === slug);
@@ -578,7 +599,8 @@ async function loadLiveMatches() {
     renderLiveMatches();
     if (selectedLiveSlug) {
       const selected = liveMatches.find((match) => matchSlug(match) === selectedLiveSlug);
-      if (selected) renderLiveDetails(selected, selectedLiveDetails);
+      if (selected && isLive(selected)) void loadLiveDetails(selectedLiveSlug);
+      else if (selected) renderLiveDetails(selected, selectedLiveDetails);
     }
   } catch {
     liveFeedFresh = false;
@@ -773,7 +795,7 @@ function renderRecommendedTeams(groups) {
 }
 async function loadRecommendedTeams(ids = favoriteLeagueIds) {
   const token = ++recommendedTeamsRequest;
-  const selected = LEAGUES.filter((league) => ids.includes(league.id) && league.season).slice(0, 10);
+  const selected = LEAGUES.filter((league) => league.id !== "143" && ids.includes(league.id) && league.season).slice(0, 10);
   if (!selected.length) { renderRecommendedTeams([]); await loadMatches(); return []; }
   const cacheKey = "statstriker_recommended_teams_v2";
   let cache = {};
@@ -1093,8 +1115,9 @@ async function initTeamComparison() {
   const leagueSelect = $("#comparison-league");
   if (!leagueSelect) return;
   const current = leagueSelect.value;
-  leagueSelect.innerHTML = LEAGUES.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(league.name)}</option>`).join("");
-  leagueSelect.value = LEAGUES.some((league) => league.id === current) ? current : selectedLeague.id;
+  const comparisonLeagues = LEAGUES.filter((league) => league.id !== "143");
+  leagueSelect.innerHTML = comparisonLeagues.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(league.name)}</option>`).join("");
+  leagueSelect.value = comparisonLeagues.some((league) => league.id === current) ? current : selectedLeague.id;
   configureComparisonGroup(leagueSelect.value);
   await loadComparisonTeams(leagueSelect.value);
 }

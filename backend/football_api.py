@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from backend.config import settings
-from backend.football_catalog import champions_league_teams, ligue1_teams
+from backend.football_catalog import champions_league_teams, complete_league_teams, ligue1_teams
 
 logger = logging.getLogger("statstriker.football")
 BASE_URL = "https://v3.football.api-sports.io"
@@ -30,6 +30,7 @@ FEATURED_COMPETITIONS = {
     "13": "Copa Libertadores",
     "71": "Brasileirão Série A",
     "253": "MLS",
+    "143": "Copa del Rey",
 }
 THESPORTSDB_LEAGUES = {"39": "4328", "140": "4335", "135": "4332", "78": "4331", "61": "4334", "71": "4351", "2": "4480", "3": "4481", "13": "4501", "253": "4346"}
 THESPORTSDB_TO_API_LEAGUE = {value: key for key, value in THESPORTSDB_LEAGUES.items()}
@@ -264,6 +265,11 @@ def available_leagues() -> list[dict[str, Any]]:
             "season": int(season["year"]),
         })
     positions = {league_id: index for index, league_id in enumerate(FEATURED_COMPETITIONS)}
+    if not any(str(league["id"]) == "143" for league in leagues):
+        leagues.append({
+            "id": "143", "name": "Copa del Rey", "type": "Cup", "logo": "https://media.api-sports.io/football/leagues/143.png",
+            "country": "Spain", "country_code": "ES", "country_flag": "https://media.api-sports.io/flags/es.svg", "season": 2026,
+        })
     return sorted(leagues, key=lambda league: positions[league["id"]])
 
 
@@ -292,6 +298,23 @@ def league_teams(league_id: int, season: int) -> list[dict[str, Any]]:
         except FootballAPIError:
             provider_teams = _thesportsdb_league_teams(str(league_id))
         return ligue1_teams(provider_teams)
+    if str(league_id) in {"39", "140", "78"} and season == 2026:
+        provider_teams = []
+        try:
+            payload = _request("teams", {"league": str(league_id), "season": str(season)}, ttl=24 * 60 * 60)
+            provider_teams = [
+                {"id": str((item.get("team") or {}).get("id") or ""),
+                 "name": str((item.get("team") or {}).get("name") or ""),
+                 "badge": (item.get("team") or {}).get("logo") or ""}
+                for item in payload.get("response", [])
+                if (item.get("team") or {}).get("name")
+            ]
+        except FootballAPIError:
+            try:
+                provider_teams = _thesportsdb_league_teams(str(league_id))
+            except FootballAPIError:
+                provider_teams = []
+        return complete_league_teams(str(league_id), provider_teams) or provider_teams
     try:
         payload = _request("teams", {"league": str(league_id), "season": str(season)}, ttl=24 * 60 * 60)
     except FootballAPIError:
