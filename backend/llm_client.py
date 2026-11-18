@@ -14,6 +14,7 @@ Las API keys se leen desde variables de entorno (ver config.py).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import time
 
 from backend.config import Settings
 
@@ -44,17 +45,22 @@ class GeminiClient(LLMClient):
         self._max_tokens = max_output_tokens
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        try:
-            interaction = self._client.interactions.create(
-                model=self.model,
-                system_instruction=system_prompt,  # <- System Prompt dinámico
-                input=user_prompt,
-                generation_config={"max_output_tokens": self._max_tokens},
-                store=False,  # no necesitamos estado en servidor: el historial vive en SQLite
-            )
-        except Exception as exc:  # errores de red, cuota, clave inválida...
-            raise LLMError(f"Error al llamar a Gemini: {exc}") from exc
-        return (interaction.output_text or "").strip()
+        for attempt in range(3):
+            try:
+                interaction = self._client.interactions.create(
+                    model=self.model,
+                    system_instruction=system_prompt,
+                    input=user_prompt,
+                    generation_config={"max_output_tokens": self._max_tokens},
+                    store=False,
+                )
+                return (interaction.output_text or "").strip()
+            except Exception as exc:  # errores de red, cuota, clave inválida...
+                detail = str(exc).casefold()
+                temporary = any(token in detail for token in ("503", "429", "500", "502", "504", "service_unavailable", "high demand"))
+                if not temporary or attempt == 2:
+                    raise LLMError(f"Error al llamar a Gemini: {exc}") from exc
+                time.sleep(1.5 * (attempt + 1))
 
 
 class OpenAIClient(LLMClient):

@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="StatStriker: análisis de fútbol, partidos y ligas en un solo lugar." />
-  <meta name="theme-color" content="#06251f" />
+  <meta name="theme-color" content="#0c141b" />
   <title>StatStriker · Centro de análisis</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body class="dashboard">
@@ -18,24 +18,30 @@
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M22.8 4.2H11.4c-3.2 0-5.7 2-6.4 5.1L2.2 22.1c-.8 3.4 1.3 5.7 4.7 5.7h3.7l1.3-6.1h-2l1-4.5h6l1-4.5h-6.1l.7-3.1h9.6l.8-5.4Z"/><path d="M14.7 27.8h5.2l2.7-12.2h5.2l1-4.6H17.3l-1 4.6h2.5l-4.1 12.2Z"/></svg></span>
         <span class="brand-name">Stat<span>Striker</span></span>
       </a>
+      <span class="brand-badge">FOOTBALL INTELLIGENCE</span>
       <nav class="main-nav" aria-label="Navegación principal">
-        <a class="nav-link active" href="#chat" data-view="home">Chat Predictivo</a>
-        <a class="nav-link" href="#live-view" data-view="live">Marcadores en Vivo</a>
-        <a class="nav-link" href="#equipos">Próximos Partidos</a>
-        <a class="nav-link" href="#equipos">Estadísticas Avanzadas</a>
-        <a class="nav-link" href="#ligas">Mi Perfil (Ligas)</a>
+        <a class="nav-link" href="#live-view" data-view="live">En Vivo</a>
+        <a class="nav-link" href="#upcoming-view" data-view="upcoming">Predicciones</a>
+        <a class="nav-link active" href="#chat" data-view="home">Asistente IA</a>
+        <a class="nav-link" href="#advanced-view" data-view="advanced">Métricas</a>
       </nav>
-      <button class="profile-button" type="button" aria-label="Perfil de usuario">♙ <span>⌄</span></button>
+      <span class="topbar-status"><i id="topbar-api-dot"></i><span id="topbar-api-label">Conectando</span></span>
+      <button class="profile-button" type="button" aria-label="Perfil de usuario">♙</button>
     </header>
 
     <main id="inicio">
     <section class="dashboard-grid" id="home-view">
       <aside class="left-column" id="ligas">
+        <section class="surface status-card" aria-label="Estado del servicio">
+          <div class="section-heading"><h2>Estado del servicio</h2><span class="icon-bubble">⌁</span></div>
+          <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li></ul>
+        </section>
         <section class="surface preferences-card">
           <div class="section-heading"><h2>Preferencias</h2><button class="switch" type="button" aria-label="Preferencias activadas"><span></span></button></div>
           <p class="eyebrow">Personaliza tu experiencia</p>
           <label class="search-box"><span>⌕</span><input id="team-search" type="search" placeholder="Buscar equipo…" autocomplete="off" /></label>
           <div class="section-heading league-heading"><h3>Ligas</h3><span class="count" id="league-count">5</span></div>
+          <label class="search-box league-search"><span>⌕</span><input id="league-search" type="search" placeholder="Buscar liga o país" autocomplete="off" /></label>
           <div class="league-list" id="league-list" aria-label="Seleccionar liga"></div>
         </section>
         <section class="surface catalog-card" id="equipos">
@@ -43,11 +49,20 @@
           <p class="catalog-note" id="catalog-note">Elige una liga para ver sus equipos.</p>
           <div class="team-list" id="team-list" aria-live="polite"><div class="loading-state"><span class="loader"></span> Cargando equipos…</div></div>
         </section>
+      <aside class="assistant-sidebar-widgets">
+        <section class="surface scores-card" id="marcadores">
+          <div class="section-heading"><div><p class="eyebrow">Agenda de fútbol</p><h2>Partidos destacados</h2></div><span class="live-indicator"><i></i> DATA</span></div>
+          <div class="matches" id="matches"><div class="loading-state"><span class="loader"></span> Cargando partidos…</div></div>
+          <p class="data-caption">Próximos encuentros de tus equipos preferidos</p>
+        </section>
+
+
+      </aside>
       </aside>
 
       <section class="surface chat-panel" id="chat">
         <header class="chat-heading">
-          <div><p class="eyebrow">Tu asistente de fútbol</p><h1>Chatbot Predictivo</h1></div>
+          <div><p class="eyebrow">Análisis con datos disponibles</p><h1>Asistente IA</h1></div>
           <span class="connection-state"><i></i><span id="provider-label">Conectando…</span></span>
           <button class="btn-icon mobile-menu" id="btn-menu" type="button" aria-label="Abrir ligas">☰</button>
         </header>
@@ -68,23 +83,7 @@
         <p class="responsible-note">+18 · Juega con responsabilidad. Los análisis son probabilísticos y no garantizan resultados.</p>
       </section>
 
-      <aside class="right-column">
-        <section class="surface scores-card" id="marcadores">
-          <div class="section-heading"><div><p class="eyebrow">Agenda de fútbol</p><h2>Partidos destacados</h2></div><span class="live-indicator"><i></i> DATA</span></div>
-          <div class="matches" id="matches"><div class="loading-state"><span class="loader"></span> Cargando partidos…</div></div>
-          <p class="data-caption">Calendario de ejemplo del proyecto</p>
-        </section>
-        <section class="surface form-card">
-          <div class="section-heading"><div><p class="eyebrow">Lectura rápida</p><h2>Forma del equipo</h2></div><span class="icon-bubble">↗</span></div>
-          <div class="form-summary"><div class="form-score"><strong>5</strong><span>jornadas</span></div><div><div class="form-pills" aria-label="Leyenda de resultados"><span class="win">V</span><span class="win">V</span><span class="draw">E</span><span class="win">V</span><span class="loss">D</span></div><p class="muted">Selecciona un equipo para iniciar tu análisis.</p></div></div>
-          <div class="form-bars" aria-hidden="true"><span style="--bar:34%"></span><span style="--bar:64%"></span><span style="--bar:44%"></span><span style="--bar:82%"></span><span style="--bar:54%"></span><span style="--bar:72%"></span><span style="--bar:40%"></span><span style="--bar:60%"></span></div>
-          <div class="form-legend"><span>Últimos partidos</span><span>Estadísticas ilustrativas</span></div>
-        </section>
-        <section class="surface status-card" aria-label="Estado del servicio">
-          <div class="section-heading"><h2>Estado del servicio</h2><span class="icon-bubble">⌁</span></div>
-          <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li></ul>
-        </section>
-      </aside>
+
     </section>
 
     <section class="live-view" id="live-view" hidden aria-labelledby="live-title">
@@ -106,16 +105,145 @@
         <div class="live-content">
           <div class="live-feed-heading"><div><p class="eyebrow">Marcador de fútbol</p><h2 id="live-feed-title">En directo ahora</h2></div><span class="count" id="live-match-count">0</span></div>
           <div class="live-matches-grid" id="live-matches" aria-live="polite"><div class="live-empty"><span class="loader"></span><p>Cargando partidos en vivo…</p></div></div>
-          <div class="live-feed-footer"><span>Actualización automática cada minuto</span><a href="https://sportscore.com/" target="_blank" rel="dofollow noopener">Datos deportivos: SportScore</a></div>
+          <div class="live-feed-footer"><span>Actualización automática cada minuto</span><a href="https://www.api-football.com/" target="_blank" rel="dofollow noopener">Datos deportivos: API-Football</a></div>
         </div>
       </section>
       <aside class="live-insights surface">
         <div class="insights-header"><div><p class="eyebrow">Análisis del partido</p><h2>Estadísticas en Tiempo Real</h2></div><span class="insights-live"><i></i> LIVE</span></div>
         <div id="live-details" class="live-details"><div class="live-empty compact"><span class="stat-ring">⚽</span><p>Elige un partido para consultar sus detalles.</p></div></div>
-        <a class="sportscore-credit" href="https://sportscore.com/" target="_blank" rel="dofollow noopener">Powered by SportScore</a>
+        <a class="sportscore-credit" href="https://www.api-football.com/" target="_blank" rel="dofollow noopener">API-Football</a>
+      </aside>
+    </section>
+
+    <section class="upcoming-view" id="upcoming-view" hidden aria-labelledby="upcoming-title">
+      <aside class="fixture-rail" aria-label="Secciones de partidos">
+        <button class="rail-button" type="button" data-view="home" aria-label="Volver al chat">◉</button>
+        <button class="rail-button active" type="button" aria-label="Próximos partidos">▦</button>
+        <button class="rail-button" type="button" data-view="live" aria-label="Partidos en vivo">◉<span class="rail-pulse"></span></button>
+        <button class="rail-button" type="button" data-view="home" aria-label="Ligas">⚙</button>
+      </aside>
+      <section class="fixture-center surface">
+        <header class="fixture-toolbar">
+          <div class="fixture-title"><div><h1 id="upcoming-title">Pronósticos Cuantitativos <span>▦</span></h1><p>Calendario anual: elige cualquier fecha</p></div></div>
+          <label class="fixture-search"><span>⌕</span><input id="fixture-search" type="search" placeholder="Buscar equipo o liga" autocomplete="off" /></label>
+        </header>
+        <div class="fixture-filterbar">
+          <div class="fixture-date-controls" role="group" aria-label="Elegir fecha del calendario">
+            <label for="fixture-selected-date">Fecha</label>
+            <input id="fixture-selected-date" type="date" aria-label="Selecciona un día del año" />
+            <button class="fixture-day" type="button" id="fixture-today">Ir a hoy</button>
+          </div>
+          <div class="fixture-sort-controls"><label for="fixture-league-filter">Liga</label><select id="fixture-league-filter"><option value="all">Todas las ligas</option></select><label for="fixture-sort">Orden</label><select id="fixture-sort"><option value="time">Hora</option><option value="league">Liga</option></select></div>
+        </div>
+        <div class="fixture-feed-heading"><div><p class="eyebrow" id="fixture-date-label">Agenda de hoy</p><h2 id="fixture-count-label">Cargando calendario…</h2></div><button class="refresh-button" type="button" id="fixture-refresh" aria-label="Actualizar calendario">↻</button></div>
+        <div class="fixtures-grid" id="fixtures-grid" aria-live="polite"><div class="live-empty"><span class="loader"></span><p>Cargando próximos partidos…</p></div></div>
+        <footer class="fixture-footer"><span id="fixture-updated">El horario se muestra en hora de Colombia</span><a href="https://www.api-football.com/" target="_blank" rel="dofollow noopener">Datos deportivos: API-Football</a></footer>
+      </section>
+      <aside class="fixture-aside">
+        <section class="surface favorites-panel"><div class="section-heading"><div><h2>Mis Ligas y Favoritos</h2><p class="eyebrow">Preferencias del usuario</p></div><span class="icon-bubble">♡</span></div><div class="favorite-leagues" id="favorite-leagues"></div></section>
+        <section class="surface recommended-teams-panel"><div class="section-heading"><div><h2>Recomendados</h2><p class="eyebrow">Equipos destacados · marca ☆ para tu agenda</p></div><span class="icon-bubble">★</span></div><div class="recommended-teams-list" id="recommended-teams-list"><p class="no-analysis">Elige tus ligas favoritas para descubrir equipos y revisar sus posiciones.</p></div></section>
+        <section class="surface quick-analysis-panel"><div class="section-heading"><div><h2>Análisis Rápido IA</h2><p class="eyebrow">Próximos partidos</p></div><span class="icon-bubble">✦</span></div><div class="quick-analysis-list" id="quick-analysis-list"><div class="loading-state">Cargando sugerencias…</div></div></section>
+        <section class="surface markets-panel"><div class="section-heading"><div><h2>Mercados disponibles</h2><p class="eyebrow">Para analizar en el chat</p></div><span class="icon-bubble">⌁</span></div><div class="market-chips"><span>1X2</span><span>Más/Menos</span><span>Ambos marcan</span><span>Doble oportunidad</span></div><p class="market-note">Las cuotas no están incluidas en la fuente de calendario.</p><a class="sportscore-credit" href="https://www.api-football.com/" target="_blank" rel="dofollow noopener">API-Football</a></section>
+      </aside>
+    </section>
+
+    <section class="advanced-view" id="advanced-view" hidden aria-labelledby="advanced-title">
+      <aside class="advanced-rail" aria-label="Secciones de estadísticas">
+        <button class="rail-button" type="button" data-view="home" aria-label="Volver al chat">◉</button>
+        <button class="rail-button" type="button" data-view="upcoming" aria-label="Próximos partidos">▦</button>
+        <button class="rail-button" type="button" data-view="live" aria-label="Partidos en vivo">◉<span class="rail-pulse"></span></button>
+        <button class="rail-button active" type="button" aria-label="Estadísticas avanzadas">▤</button>
+      </aside>
+      <section class="advanced-center surface">
+        <header class="advanced-toolbar">
+          <div><p class="eyebrow">Arquitectura cuantitativa</p><h1 id="advanced-title">Centro de Métricas &amp; Rendimiento</h1><p>Compara dos equipos de una misma liga con datos de temporada.</p></div>
+          <div class="advanced-controls"><label for="analytics-match-select">Partido</label><select id="analytics-match-select"><option value="">Selecciona un partido</option></select><button class="refresh-button" type="button" id="analytics-refresh" aria-label="Actualizar estadísticas">↻</button></div>
+        </header>
+        <section class="team-comparison-panel" aria-labelledby="comparison-title">
+          <div class="comparison-panel-heading"><div><p class="eyebrow">Comparativa de equipos</p><h2 id="comparison-title">Elige la liga y los dos equipos</h2></div><button class="refresh-button" type="button" id="analytics-refresh-teams" aria-label="Actualizar comparación">↻</button></div>
+          <div class="comparison-controls">
+            <label>Liga<select id="comparison-league" aria-label="Seleccionar liga"></select></label>
+            <label id="comparison-group-field" hidden>Grupo (bombo UEFA)<select id="comparison-group" aria-label="Seleccionar grupo o bombo"></select></label>
+            <label>Equipo 1<select id="comparison-team-one" aria-label="Seleccionar primer equipo" disabled><option value="">Selecciona un equipo</option></select></label>
+            <span class="comparison-vs">VS</span>
+            <label>Equipo 2<select id="comparison-team-two" aria-label="Seleccionar segundo equipo" disabled><option value="">Selecciona un equipo</option></select></label>
+            <button class="comparison-submit" id="comparison-submit" type="button">Comparar equipos</button>
+          </div>
+          <p class="comparison-status" id="comparison-status" aria-live="polite">Selecciona una liga para cargar su plantilla.</p>
+          <div class="comparison-results" id="comparison-results" aria-live="polite"><p class="detail-unavailable">La comparativa mostrará partidos jugados, victorias, goles y porterías a cero.</p></div>
+        </section>
+        <div class="analytics-notice" id="analytics-source-note"><span>ⓘ</span><span>Cargando las métricas disponibles…</span></div>
+        <div class="advanced-grid">
+          <section class="metric-card ranking-card"><div class="metric-heading"><div><p class="eyebrow">Comparativa</p><h2>Equipos destacados</h2></div><span class="metric-unit">Muestra</span></div><p class="metric-caption">Ordenados por victorias en los últimos cinco partidos del dataset.</p><div class="team-ranking" id="analytics-team-ranking"><div class="loading-state"><span class="loader"></span> Cargando equipos…</div></div></section>
+          <section class="metric-card goals-card"><div class="metric-heading"><div><p class="eyebrow">Promedios por partido</p><h2>Rendimiento de goles</h2></div><span class="metric-icon">▥</span></div><div class="goal-legend"><span><i class="goal-for-key"></i>A favor</span><span><i class="goal-against-key"></i>En contra</span></div><div class="goal-chart" id="analytics-goals-chart"></div></section>
+          <section class="metric-card attack-card"><div class="metric-heading"><div><p class="eyebrow">Producción ofensiva</p><h2>xG y córners</h2></div><span class="metric-icon">↗</span></div><div class="attack-metrics" id="analytics-attack-metrics"></div><p class="metric-caption">xG: goles esperados por partido · córners: promedio del dataset.</p></section>
+          <section class="metric-card h2h-card"><div class="metric-heading"><div><p class="eyebrow">Enfrentamientos directos</p><h2>Historial H2H</h2></div><span class="metric-icon">⇄</span></div><div id="analytics-h2h"></div></section>
+          <section class="metric-card probability-card"><div class="metric-heading"><div><p class="eyebrow">Mercado 1X2</p><h2>Probabilidad implícita</h2></div><span class="metric-icon">⌁</span></div><p class="metric-caption">Estimación normalizada a partir de las cuotas promedio del dataset.</p><div id="analytics-probabilities"></div></section>
+        </div>
+        <footer class="advanced-footer"><span id="analytics-updated">Métricas disponibles según el dataset del proyecto.</span><span>Las métricas no garantizan resultados.</span></footer>
+      </section>
+      <aside class="analytics-aside surface">
+        <div class="analytics-aside-heading"><div><p class="eyebrow">Lecturas del dataset</p><h2>Análisis Predictivo</h2></div><span class="insights-live"><i></i> IA</span></div>
+        <div id="analytics-recommendations" class="analytics-recommendations"><div class="loading-state">Preparando comparativas…</div></div>
+        <section class="api-data-charts" aria-labelledby="api-charts-title">
+          <div class="api-charts-heading"><div><p class="eyebrow">API-Football</p><h3 id="api-charts-title">Datos reales de partidos</h3></div><button class="refresh-button" type="button" id="api-charts-refresh" aria-label="Actualizar gr&#225;ficas de la API">&#8635;</button></div>
+          <p class="api-charts-updated" id="api-charts-updated">Cargando partidos y resultados...</p>
+          <article class="api-chart-card"><h4>Partidos por liga</h4><div class="api-chart-legend"><span><i class="api-upcoming-key"></i>Pr&#243;ximos</span><span><i class="api-live-key"></i>En vivo</span></div><div class="api-chart-rows" id="api-league-chart"></div></article>
+          <article class="api-chart-card"><h4>Pr&#243;ximos partidos por hora</h4><div class="api-chart-rows" id="api-time-chart"></div></article>
+          <article class="api-chart-card"><h4>Goles en vivo por liga</h4><div class="api-chart-rows" id="api-goals-chart"></div></article>
+        </section>
+        <p class="analytics-aside-note">Las observaciones resumen datos de muestra. Consulta al chatbot para profundizar en cada partido.</p>
+        <button type="button" id="analytics-chat-button" class="analytics-chat-button">Consultar Chatbot <span>↗</span></button>
+      </aside>
+    </section>
+
+    <section class="profile-view" id="profile-view" hidden aria-labelledby="profile-title">
+      <aside class="profile-identity surface">
+        <div class="profile-photo-wrap">
+          <div class="profile-avatar" id="profile-avatar"><span id="profile-avatar-initial">U</span></div>
+          <label class="photo-picker" for="profile-photo-input">Cambiar foto</label>
+          <input class="visually-hidden" id="profile-photo-input" type="file" accept="image/*" aria-label="Elegir foto de perfil desde tu dispositivo" />
+          <p class="photo-note">La foto se guarda en este dispositivo.</p>
+        </div>
+        <form class="profile-form" id="profile-form" autocomplete="on">
+          <label for="profile-name">Nombre</label><input id="profile-name" name="name" type="text" maxlength="60" placeholder="Tu nombre" />
+          <label for="profile-email">Correo</label><input id="profile-email" name="email" type="email" maxlength="120" placeholder="tu@correo.com" />
+          <label for="profile-phone">Teléfono</label><input id="profile-phone" name="phone" type="tel" maxlength="30" placeholder="+57 300 000 0000" />
+        </form>
+      </aside>
+      <section class="profile-main surface">
+        <header class="profile-main-heading"><div><h1 id="profile-title">Mi Perfil</h1><p>Configura tus ligas y países favoritos</p></div><span class="profile-saved-indicator" id="profile-save-status" aria-live="polite">Cambios locales</span></header>
+        <div class="profile-tabs" role="tablist" aria-label="Preferencias del perfil">
+          <button class="profile-tab active" type="button" role="tab" aria-selected="true" aria-controls="profile-leagues-panel" data-profile-tab="leagues">Mis Ligas Preferidas</button>
+          <button class="profile-tab" type="button" role="tab" aria-selected="false" aria-controls="profile-countries-panel" data-profile-tab="countries">Países Favoritos</button>
+        </div>
+        <section class="profile-preferences-panel" id="profile-leagues-panel" role="tabpanel">
+          <div class="profile-panel-heading"><div><h2>Ligas disponibles</h2><p>Elige las ligas que quieres priorizar en la agenda.</p></div><span class="count" id="profile-league-count">0</span></div>
+          <label class="search-box profile-choice-search"><span>⌕</span><input id="profile-league-search" type="search" placeholder="Buscar liga o país" autocomplete="off" /></label>
+          <div class="profile-choice-grid" id="profile-league-choices"></div>
+        </section>
+        <section class="profile-preferences-panel" id="profile-countries-panel" role="tabpanel" hidden>
+          <div class="profile-panel-heading"><div><h2>Países favoritos</h2><p>Organiza tus ligas por las competiciones que sigues.</p></div><span class="count" id="profile-country-count">0</span></div>
+          <label class="search-box profile-choice-search"><span>⌕</span><input id="profile-country-search" type="search" placeholder="Buscar país" autocomplete="off" /></label>
+          <div class="profile-choice-grid" id="profile-country-choices"></div>
+        </section>
+        <div class="personalization-card"><span class="personalization-check">✓</span><div><h2>Preferencias de agenda activas</h2><p id="profile-personalization-copy">Tus ligas favoritas se destacarán en Próximos Partidos.</p></div></div>
+        <footer class="profile-actions"><button class="profile-save-button" type="button" id="profile-save">Guardar cambios</button><button class="profile-reset-button" type="button" id="profile-reset">Restablecer</button></footer>
+      </section>
+      <aside class="profile-summary surface">
+        <div class="profile-summary-heading"><h2>Estadísticas de Usuario</h2><p>Resumen de preferencias</p></div>
+        <div class="profile-summary-section"><h3>Mis ligas</h3><p class="eyebrow">Ligas destacadas en la agenda</p><div class="profile-preference-chart"><div class="preference-donut" id="profile-preference-donut"><span id="profile-preference-total">0</span></div><ul class="profile-summary-list" id="profile-summary-leagues"></ul></div></div>
+        <div class="profile-summary-section active-filters"><h3>Filtros activos</h3><ul id="profile-active-filters"><li>Las preferencias aparecen aquí al guardarlas.</li></ul></div>
+        <div class="profile-summary-tip"><span>✦</span><p>Las ligas seleccionadas se priorizan en la agenda y en sus sugerencias rápidas.</p></div>
       </aside>
     </section>
     </main>
+    <nav class="mobile-bottom-nav" aria-label="Navegación principal móvil">
+      <button class="mobile-nav-item" type="button" data-view="live" aria-label="En Vivo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 18 0M6.5 12a5.5 5.5 0 0 1 11 0M10 12a2 2 0 0 1 4 0M12 12v7"/></svg><span>En Vivo</span></button>
+      <button class="mobile-nav-item" type="button" data-view="upcoming" aria-label="Predicciones"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3m10-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13H4V6a1 1 0 0 1 1-1Zm3 8h3m-3 4h8"/></svg><span>Predicciones</span></button>
+      <button class="mobile-nav-item active" type="button" data-view="home" aria-label="Asistente IA" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m-7 5h14v8H5zm3 0V7a4 4 0 0 1 8 0v3m-8 3h.01M16 13h.01M9 18v2m6-2v2"/></svg><span>Asistente</span></button>
+      <button class="mobile-nav-item" type="button" data-view="advanced" aria-label="Métricas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 3 3 6-7m-4 0h4v4"/></svg><span>Métricas</span></button>
+    </nav>
   </div>
   <script src="app.js"></script>
 </body>

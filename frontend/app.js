@@ -1,10 +1,16 @@
 "use strict";
 
-const API_BASE = location.protocol === "file:" || (location.port && location.port !== "8000") ? "http://127.0.0.1:8000" : "";
-const LIVE_API = "https://sportscore.com/api/widget";
+// Keep the UI connected to the active backend even if an older server is open on another port.
+const API_BASE = "http://127.0.0.1:8011";
 const SESSION_KEY = "statstriker_session";
-const CATALOG_KEY = "statstriker_team_catalog_v1";
+const CATALOG_KEY = "statstriker_team_catalog_v3";
 const CATALOG_TTL = 12 * 60 * 60 * 1000;
+const FIXTURE_CACHE_KEY = "statstriker_upcoming_fixtures_v3";
+const FIXTURE_CACHE_TTL = 3 * 60 * 1000;
+const PROFILE_STORAGE_KEY = "statstriker_profile_v1";
+const AVATAR_STORAGE_KEY = "statstriker_profile_avatar_v1";
+const FAVORITE_TEAM_KEY = "statstriker_favorite_teams_v1";
+const FEATURED_LEAGUE_IDS = ["39", "140", "78", "135", "61", "2", "3", "13", "71", "253"];
 let sessionId = localStorage.getItem(SESSION_KEY) || newSessionId();
 localStorage.setItem(SESSION_KEY, sessionId);
 
@@ -16,12 +22,27 @@ const els = {
   teamsTitle: $("#teams-title"), catalogNote: $("#catalog-note"), teamSearch: $("#team-search"),
 };
 
-const LEAGUES = [
-  { id: "4328", name: "Premier League", flag: "🏴", apiName: "English_Premier_League" },
-  { id: "4335", name: "LaLiga", flag: "🇪🇸", apiName: "Spanish_La_Liga" },
-  { id: "4332", name: "Serie A", flag: "🇮🇹", apiName: "Italian_Serie_A" },
-  { id: "4331", name: "Bundesliga", flag: "🇩🇪", apiName: "German_Bundesliga" },
-  { id: "4334", name: "Ligue 1", flag: "🇫🇷", apiName: "French_Ligue_1" },
+let LEAGUES = [
+  { id: "39", name: "Premier League", country: "England", season: 2026, logo: "https://media.api-sports.io/football/leagues/39.png" },
+  { id: "140", name: "LaLiga", country: "Spain", season: 2026, logo: "https://media.api-sports.io/football/leagues/140.png" },
+  { id: "78", name: "Bundesliga", country: "Germany", season: 2026, logo: "https://media.api-sports.io/football/leagues/78.png" },
+  { id: "135", name: "Serie A", country: "Italy", season: 2026, logo: "https://media.api-sports.io/football/leagues/135.png" },
+  { id: "61", name: "Ligue 1", country: "France", season: 2026, logo: "https://media.api-sports.io/football/leagues/61.png" },
+  { id: "2", name: "UEFA Champions League", country: "World", season: 2026, logo: "https://media.api-sports.io/football/leagues/2.png" },
+  { id: "3", name: "UEFA Europa League", country: "World", season: 2026, logo: "https://media.api-sports.io/football/leagues/3.png" },
+  { id: "13", name: "Copa Libertadores", country: "World", season: 2026, logo: "https://media.api-sports.io/football/leagues/13.png" },
+  { id: "71", name: "Brasileir\u00e3o S\u00e9rie A", country: "Brazil", season: 2026, logo: "https://media.api-sports.io/football/leagues/71.png" },
+  { id: "253", name: "MLS", country: "USA", season: 2026, logo: "https://media.api-sports.io/football/leagues/253.png" },
+];
+let COUNTRIES = [
+  { id: "England", name: "Inglaterra", flag: "https://media.api-sports.io/flags/gb.svg" },
+  { id: "Spain", name: "España", flag: "https://media.api-sports.io/flags/es.svg" },
+  { id: "Germany", name: "Alemania", flag: "https://media.api-sports.io/flags/de.svg" },
+  { id: "Italy", name: "Italia", flag: "https://media.api-sports.io/flags/it.svg" },
+  { id: "France", name: "Francia", flag: "https://media.api-sports.io/flags/fr.svg" },
+  { id: "World", name: "Competiciones internacionales", flag: "" },
+  { id: "Brazil", name: "Brasil", flag: "https://media.api-sports.io/flags/br.svg" },
+  { id: "USA", name: "Estados Unidos", flag: "https://media.api-sports.io/flags/us.svg" },
 ];
 const RULE_LABELS = {
   persona_tipster: ["🎩 Analista", ""], reglas_innegociables: ["🛡️ Reglas base", ""],
@@ -36,7 +57,6 @@ const RULE_LABELS = {
 };
 let selectedLeague = LEAGUES[0];
 let catalog = {};
-let latestMatches = [];
 let busy = false;
 let liveMatches = [];
 let liveFilter = "live";
@@ -44,6 +64,21 @@ let liveRefreshTimer = null;
 let selectedLiveSlug = "";
 let selectedLiveDetails = null;
 let liveFeedFresh = false;
+let upcomingFixtures = [];
+let selectedFixtureDate = /^\d{4}-\d{2}-\d{2}$/.test(localStorage.getItem("statstriker_selected_fixture_date") || "")
+  ? localStorage.getItem("statstriker_selected_fixture_date") : bogotaDate();
+let upcomingRequestId = 0;
+let lastFixtureContext = null;
+let upcomingTimer = null;
+let quickAnalysisState = { key: "", loading: false, error: "", suggestions: [] };
+let favoriteLeagueIds = loadFavoriteLeagues();
+let favoriteTeams = loadFavoriteTeams();
+let recommendedTeamGroups = [];
+let agendaRequest = 0;
+let analyticsData = null;
+let selectedAnalyticsMatch = "";
+let comparisonLeagueTeams = [];
+let comparisonRequestId = 0;
 
 function newSessionId() { return crypto.randomUUID ? crypto.randomUUID() : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function escapeHtml(value) { return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
@@ -97,18 +132,34 @@ function addTyping() {
   article.innerHTML = `<div class="msg__avatar">S</div><div class="msg__bubble"><div class="typing"><span></span><span></span><span></span></div><p class="muted">Buscando contexto y preparando el análisis…</p></div>`;
   els.messages.appendChild(article); scrollToBottom(); return article;
 }
-function addBotMessage({ answer, active_rules = [], sources = [] }, { isError = false } = {}) {
+function addBotMessage({ answer, active_rules = [], sources = [] }, { isError = false, fixture = null, retryMessage = "" } = {}) {
   const article = document.createElement("article"); article.className = `msg msg--bot${isError ? " msg--error" : ""}`;
   const rules = active_rules.filter((rule) => !["persona_tipster", "reglas_innegociables"].includes(rule));
   const sourceHtml = sources.length ? `<details><summary>Fuentes consultadas (${sources.length})</summary>${sources.map((source) => `<div class="source"><span>[${escapeHtml(source.category)}] ${escapeHtml(source.match)}</span><span class="bar" title="Similitud ${(source.similarity * 100).toFixed(0)}%"><span style="width:${(source.similarity * 100).toFixed(0)}%"></span></span></div>`).join("")}</details>` : "";
   const meta = !isError && (rules.length || sources.length) ? `<div class="msg__meta"><div class="row">${rules.map(ruleTag).join("")}</div>${sourceHtml}</div>` : "";
-  article.innerHTML = `<div class="msg__avatar">${isError ? "!" : "S"}</div><div class="msg__bubble">${renderMarkdown(answer)}${meta}</div>`;
+  const fixtureCard = fixture ? renderChatFixtureCard(fixture) : "";
+  const retry = isError && retryMessage ? `<button class="chat-retry-button" type="button" data-retry-message="${escapeHtml(retryMessage)}">Reintentar solicitud</button>` : "";
+  article.innerHTML = `<div class="msg__avatar">${isError ? "!" : "S"}</div><div class="msg__bubble">${renderMarkdown(answer)}${fixtureCard}${meta}${retry}</div>`;
   els.messages.appendChild(article); scrollToBottom();
 }
 
+function renderChatFixtureCard(fixture) {
+  const homeLogo = safeImage(fixture.homeLogo), awayLogo = safeImage(fixture.awayLogo);
+  const kickoff = fixture.time && !Number.isNaN(fixture.time.valueOf())
+    ? new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixture.time)
+    : "Fecha y hora por confirmar";
+  return `<section class="chat-fixture-card"><p class="chat-fixture-competition">${escapeHtml(fixture.competition)}</p><div class="chat-fixture-teams">${homeLogo ? `<img src="${homeLogo}" alt="Escudo de ${escapeHtml(fixture.home)}" loading="lazy">` : `<span class="team-placeholder">${escapeHtml(fixture.home.slice(0, 1))}</span>`}<strong>${escapeHtml(fixture.home)} <span>vs</span> ${escapeHtml(fixture.away)}</strong>${awayLogo ? `<img src="${awayLogo}" alt="Escudo de ${escapeHtml(fixture.away)}" loading="lazy">` : `<span class="team-placeholder">${escapeHtml(fixture.away.slice(0, 1))}</span>`}</div><p class="chat-fixture-kickoff">◷ ${escapeHtml(kickoff)} · hora de Colombia</p></section>`;
+}
+
 function renderLeagues() {
-  $("#league-count").textContent = String(LEAGUES.length);
-  els.leagueList.innerHTML = LEAGUES.map((league) => `<button class="league-button ${league.id === selectedLeague.id ? "active" : ""}" type="button" data-league="${league.id}"><span class="league-flag">${league.flag}</span><span>${escapeHtml(league.name)}</span><small>›</small></button>`).join("");
+  const query = $("#league-search")?.value.trim().toLocaleLowerCase("es") || "";
+  const filtered = LEAGUES.filter((league) => `${league.name} ${league.country || ""}`.toLocaleLowerCase("es").includes(query));
+  $("#league-count").textContent = String(filtered.length);
+  els.leagueList.innerHTML = filtered.map((league) => {
+    const image = safeImage(league.logo || league.country_flag);
+    const icon = image ? `<img src="${image}" alt="" loading="lazy" referrerpolicy="no-referrer">` : escapeHtml(league.flag || "?");
+    return `<button class="league-button ${league.id === selectedLeague.id ? "active" : ""}" type="button" data-league="${escapeHtml(league.id)}"><span class="league-flag">${icon}</span><span class="league-button-copy"><strong>${escapeHtml(league.name)}</strong><small>${escapeHtml(league.country || "")}</small></span></button>`;
+  }).join("") || `<p class="loading-state">No se encontraron ligas.</p>`;
 }
 function renderTeams(teams) {
   const query = els.teamSearch.value.trim().toLocaleLowerCase("es");
@@ -122,26 +173,66 @@ function renderTeams(teams) {
   }).join("") : `<p class="loading-state">No hay equipos que coincidan con la búsqueda.</p>`;
 }
 function getCachedCatalog(id) {
-  try { const cache = JSON.parse(localStorage.getItem(CATALOG_KEY) || "{}"); return cache[id]?.expires > Date.now() && Array.isArray(cache[id].teams) ? cache[id].teams : null; } catch { return null; }
+  try { const cache = JSON.parse(localStorage.getItem(CATALOG_KEY) || "{}"); return cache[id]?.expires > Date.now() && Array.isArray(cache[id].teams) && cache[id].teams.length ? cache[id].teams : null; } catch { return null; }
 }
 function saveCachedCatalog(id, teams) {
+  if (!Array.isArray(teams) || !teams.length) return;
   try { const cache = JSON.parse(localStorage.getItem(CATALOG_KEY) || "{}"); cache[id] = { expires: Date.now() + CATALOG_TTL, teams }; localStorage.setItem(CATALOG_KEY, JSON.stringify(cache)); } catch { /* almacenamiento opcional */ }
 }
 async function loadLeague(id) {
   selectedLeague = LEAGUES.find((league) => league.id === id) || LEAGUES[0];
+  loadRecommendedTeams(favoriteLeagueIds.includes(selectedLeague.id) ? favoriteLeagueIds : [selectedLeague.id]);
   renderLeagues(); els.teamsTitle.textContent = selectedLeague.name; els.teamSearch.value = "";
-  const cached = catalog[id] || getCachedCatalog(id);
+  const cached = (catalog[id]?.length ? catalog[id] : null) || getCachedCatalog(id);
   if (cached) { catalog[id] = cached; renderTeams(cached); }
   else { els.teamCount.textContent = "…"; els.catalogNote.textContent = "Cargando el catálogo de la liga…"; els.teamList.innerHTML = `<div class="loading-state"><span class="loader"></span> Cargando escudos y equipos…</div>`; }
   try {
-    const teams = await api(`/api/teams/${encodeURIComponent(id)}`);
+    const league = LEAGUES.find((item) => item.id === id);
+    const data = league?.season
+      ? await api(`/api/football/teams?league=${encodeURIComponent(id)}&season=${encodeURIComponent(league.season)}`)
+      : await api(`/api/teams/${encodeURIComponent(id)}`);
+    const teams = data.teams || data;
     if (selectedLeague.id !== id) return;
     catalog[id] = teams; saveCachedCatalog(id, teams); renderTeams(teams);
-    renderMatches(latestMatches);
   } catch (error) {
     if (selectedLeague.id !== id) return;
     if (cached) { renderTeams(cached); els.catalogNote.textContent = `${cached.length} equipos · catálogo guardado`; }
     else { els.teamCount.textContent = "0"; els.catalogNote.textContent = "No se pudo conectar con el catálogo."; els.teamList.innerHTML = `<p class="loading-state">${escapeHtml(error.message)}. Comprueba que el servidor esté conectado.</p>`; }
+  }
+}
+
+async function loadFootballLeagues() {
+  const cacheKey = "statstriker_api_football_leagues_v2";
+  let leagues = [];
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+    if (cached?.expires > Date.now() && Array.isArray(cached.leagues)) leagues = cached.leagues;
+  } catch { /* cach? opcional */ }
+  try {
+    if (!leagues.length) {
+      const data = await api("/api/football/leagues");
+      leagues = Array.isArray(data.leagues) ? data.leagues : [];
+      if (leagues.length) localStorage.setItem(cacheKey, JSON.stringify({ expires: Date.now() + 24 * 60 * 60 * 1000, leagues }));
+    }
+    leagues = leagues.filter((league) => FEATURED_LEAGUE_IDS.includes(String(league.id)));
+    if (!leagues.length) return;
+    const legacyIds = { "4328": "39", "4335": "140", "4332": "135", "4331": "78", "4334": "61" };
+    const selectedId = legacyIds[selectedLeague.id] || selectedLeague.id;
+    favoriteLeagueIds = [...new Set(favoriteLeagueIds.map((id) => legacyIds[id] || id))].filter((id) => FEATURED_LEAGUE_IDS.includes(id));
+    LEAGUES = leagues.map((league) => ({ ...league, id: String(league.id), flag: "", apiName: league.name }));
+    if (!favoriteLeagueIds.length) favoriteLeagueIds = ["39", "140"];
+    const countries = new Map();
+    LEAGUES.forEach((league) => { if (league.country) countries.set(league.country, { id: league.country, name: league.country, flag: league.country_flag || "" }); });
+    if (countries.size) COUNTRIES = [...countries.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
+    selectedLeague = LEAGUES.find((league) => league.id === selectedId) || LEAGUES.find((league) => favoriteLeagueIds.includes(league.id)) || LEAGUES[0];
+    saveFavoriteLeagues();
+    renderLeagues(); renderFavoriteLeagues(); renderProfileChoices();
+    if (!$("#profile-view").hidden) renderProfile();
+    await loadLeague(selectedLeague.id);
+    await loadRecommendedTeams(favoriteLeagueIds);
+    await initTeamComparison();
+  } catch (error) {
+    console.warn("No se pudo cargar el cat?logo ampliado de ligas:", error.message);
   }
 }
 
@@ -150,11 +241,17 @@ async function loadHealth() {
   try {
     const health = await api("/api/health");
     setStatus("api", "ok", "online");
+    $("#topbar-api-dot")?.classList.remove("is-offline");
+    $("#topbar-api-dot")?.classList.add("is-online");
+    if ($("#topbar-api-label")) $("#topbar-api-label").textContent = "API online";
     setStatus("llm", health.llm.ready ? (health.llm.provider === "mock" ? "warn" : "ok") : "err", health.llm.ready ? health.llm.provider : "sin API key");
     setStatus("vec", health.vector_db.documents ? "ok" : "warn", health.vector_db.documents ? `${health.vector_db.documents} docs` : "sin datos");
     els.providerLabel.textContent = health.llm.ready ? `Modelo ${health.llm.provider} · embeddings ${health.embedding_provider}` : "Analista IA sin configurar";
   } catch {
     setStatus("api", "err", "offline"); setStatus("llm", "err", "—"); setStatus("vec", "err", "—");
+    $("#topbar-api-dot")?.classList.remove("is-online");
+    $("#topbar-api-dot")?.classList.add("is-offline");
+    if ($("#topbar-api-label")) $("#topbar-api-label").textContent = "API sin conexión";
     els.providerLabel.textContent = "Backend desconectado · inicia FastAPI";
   }
 }
@@ -164,16 +261,55 @@ function crestFor(name) {
 }
 function teamSide(name) { const badge = crestFor(name); return `<div class="match-side">${badge ? `<img class="team-badge" src="${badge}" data-initial="${escapeHtml(name.slice(0, 1).toUpperCase())}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(name.slice(0, 1))}</span>`}<span>${escapeHtml(name)}</span></div>`; }
 async function loadMatches() {
+  const token = ++agendaRequest;
+  els.matches.innerHTML = `<p class="loading-state"><span class="loader"></span> Buscando los encuentros más cercanos…</p>`;
+  const recommendedTeams = [0, 1, 2].flatMap((rank) => recommendedTeamGroups.flatMap(({ league, teams }) => {
+    const team = teams?.[rank];
+    return team ? [{
+      id: String(team.team_id || team.id || ""),
+      name: team.name,
+      badge: team.logo || team.badge || "",
+      leagueId: String(league.id),
+      leagueName: league.name,
+      season: league.season,
+    }] : [];
+  }));
+  const agendaTeams = favoriteTeams.length ? favoriteTeams : recommendedTeams;
+  const selectedTeams = agendaTeams.filter((team) => team.id && team.season).slice(0, 10);
+  if (!selectedTeams.length) {
+    els.matches.innerHTML = `<p class="loading-state">Selecciona una liga favorita para ver sus próximos partidos.</p>`;
+    return;
+  }
   try {
-    const matches = await api("/api/matches");
-    latestMatches = matches;
-    if (!matches.length) { els.matches.innerHTML = `<p class="loading-state">No hay partidos cargados en la base de análisis.</p>`; return; }
-    renderMatches(matches);
-  } catch { els.matches.innerHTML = `<p class="loading-state">Partidos no disponibles.</p>`; }
+    const schedules = await Promise.all(selectedTeams.map(async (team) => {
+      try {
+        const data = await api(`/api/football/team-fixtures?team_id=${encodeURIComponent(team.id)}&season=${encodeURIComponent(team.season)}&limit=5`, { signal: AbortSignal.timeout(15000) });
+        return (data.matches || []).map((fixture) => ({ ...normalizeFixture(fixture), preferredTeam: team.name }));
+      } catch { return []; }
+    }));
+    if (token !== agendaRequest) return;
+    const now = Date.now(), unique = new Map();
+    schedules.flat().forEach((fixture) => {
+      if (!fixture.time || Number.isNaN(fixture.time.valueOf()) || fixture.time.valueOf() < now) return;
+      const key = fixture.id || `${fixture.home}|${fixture.away}|${fixture.time.toISOString()}`;
+      if (!unique.has(key)) unique.set(key, fixture);
+    });
+    renderMatches([...unique.values()].sort((a, b) => a.time - b.time).slice(0, 3));
+  } catch {
+    if (token === agendaRequest) els.matches.innerHTML = `<p class="loading-state">No se pudo cargar la agenda. Intenta actualizar más tarde.</p>`;
+  }
 }
 function renderMatches(matches) {
-  if (!matches.length) { els.matches.innerHTML = `<p class="loading-state">No hay partidos cargados en la base de análisis.</p>`; return; }
-  els.matches.innerHTML = matches.map((match) => `<div class="match-card" tabindex="0" role="button" data-q="Analiza el ${escapeHtml(match.home_team)} vs ${escapeHtml(match.away_team)}: ¿qué mercado tiene más valor?"><div class="match-card__comp">⚽ ${escapeHtml(match.competition)}</div><div class="match-card__teams">${teamSide(match.home_team)}<span class="match-vs">vs</span>${teamSide(match.away_team)}</div><div class="match-card__date">◷ ${escapeHtml(match.date)}</div></div>`).join("");
+  if (!matches.length) { els.matches.innerHTML = `<p class="loading-state">No encontramos próximos partidos de tus equipos preferidos.</p>`; return; }
+  els.matches.innerHTML = matches.map((match) => {
+    const leagueLogo = match.competitionLogo ? `<img src="${match.competitionLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽";
+    const homeLogo = match.homeLogo ? `<img src="${match.homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(match.home.slice(0, 1))}</span>`;
+    const awayLogo = match.awayLogo ? `<img src="${match.awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(match.away.slice(0, 1))}</span>`;
+    const date = match.time ? new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "short", year: "numeric" }).format(match.time) : "Fecha por confirmar";
+    const round = match.round ? ` · Jornada ${String(match.round).replace(/^regular season\s*-\s*/i, "")}` : "";
+    const prompt = `Analiza el partido ${match.home} vs ${match.away} de ${match.competition}. Fecha y hora: ${fixtureLongDate(match)}.`;
+    return `<button class="match-card" type="button" data-q="${escapeHtml(prompt)}"><span class="match-card__comp">${leagueLogo}<span>${escapeHtml(match.competition)}${escapeHtml(round)}</span></span><span class="match-card__teams"><span class="match-side">${homeLogo}<span>${escapeHtml(match.home)}</span></span><span class="match-vs">vs</span><span class="match-side">${awayLogo}<span>${escapeHtml(match.away)}</span></span></span><span class="match-card__date">◷ ${escapeHtml(date)} · ${escapeHtml(fixtureClock(match))}</span></button>`;
+  }).join("");
 }
 async function loadHistory() {
   try {
@@ -181,15 +317,100 @@ async function loadHistory() {
     history.forEach((item) => { addUserMessage(item.user_message); addBotMessage({ answer: item.bot_response, active_rules: item.active_rules, sources: item.sources }); });
   } catch { /* el chat informa si la API no está disponible */ }
 }
-async function sendMessage(text) {
-  const message = text.trim(); if (!message || busy) return;
-  busy = true; els.send.disabled = true; els.input.value = ""; autoResize(); addUserMessage(message); const typing = addTyping();
+function normalizeMention(text) {
+  return String(text || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+function findMentionedFixture(message) {
+  const query = normalizeMention(message);
+  const live = liveMatches.map(normalizeFixture);
+  const candidates = [...upcomingFixtures, ...live];
+  const teams = (fixture) => [normalizeMention(fixture.home), normalizeMention(fixture.away)].filter((name) => name.length >= 4);
+  const both = candidates.find((fixture) => {
+    const [home, away] = teams(fixture);
+    return home && away && query.includes(home) && query.includes(away);
+  });
+  if (both) return both;
+  if (!/cuando|fecha|hora|proximo|proxima|juega|partido|enfrenta/.test(query)) return null;
+  return candidates.find((fixture) => teams(fixture).some((name) => query.includes(name))) || null;
+}
+async function findNextFixtureForMessage(message) {
+  const query = normalizeMention(message);
+  const findTeams = () => Object.entries(catalog).flatMap(([leagueId, teams]) => {
+    const league = LEAGUES.find((item) => item.id === leagueId);
+    return (teams || []).filter((team) => {
+      const name = normalizeMention(team.name);
+      return name.length >= 2 && ` ${query} `.includes(` ${name} `);
+    })
+      .map((team) => ({ ...team, league }));
+  }).sort((a, b) => b.name.length - a.name.length);
+  let mentionedTeams = findTeams();
+  const namesBothMentioned = /\b(vs|contra)\b/.test(query);
+  if (!mentionedTeams.length || (namesBothMentioned && mentionedTeams.length < 2)) {
+    const relevantLeagues = [...new Map([...LEAGUES.filter((league) => favoriteLeagueIds.includes(league.id)), selectedLeague].map((league) => [league.id, league])).values()];
+    await Promise.all(relevantLeagues.map(async (league) => {
+      if (catalog[league.id] || !league.season) return;
+      try {
+        const data = await api(`/api/football/teams?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`, { signal: AbortSignal.timeout(12000) });
+        catalog[league.id] = data.teams || [];
+        saveCachedCatalog(league.id, catalog[league.id]);
+      } catch { /* se consultan las ligas restantes */ }
+    }));
+    mentionedTeams = findTeams();
+  }
+  if (!mentionedTeams.length || !/cuando|que dia|a que hora|fecha|horario|proxim|juega|partido|vs|contra|analiza/.test(query)) return null;
+  const lead = mentionedTeams[0], league = lead.league;
+  if (!league?.season) return null;
   try {
-    const data = await api("/api/chat", { method: "POST", body: JSON.stringify({ message, session_id: sessionId }) });
-    typing.remove(); addBotMessage(data);
-  } catch (error) { typing.remove(); addBotMessage({ answer: `**Error:** ${error.message}` }, { isError: true }); }
+    const data = await api(`/api/football/team-fixtures?team_id=${encodeURIComponent(lead.id)}&season=${encodeURIComponent(league.season)}&limit=10`, { signal: AbortSignal.timeout(15000) });
+    const fixtures = (Array.isArray(data.matches) ? data.matches : []).map(normalizeFixture);
+    const opponent = mentionedTeams.find((team) => team.id !== lead.id);
+    if (opponent) {
+      const paired = fixtures.find((fixture) => [fixture.homeTeamId, fixture.awayTeamId].includes(String(lead.id))
+        && [fixture.homeTeamId, fixture.awayTeamId].includes(String(opponent.id)));
+      if (paired) return paired;
+      const byName = fixtures.find((fixture) => {
+        const names = [normalizeMention(fixture.home), normalizeMention(fixture.away)];
+        return names.includes(normalizeMention(lead.name)) && names.includes(normalizeMention(opponent.name));
+      });
+      if (byName) return byName;
+      return null;
+    }
+    return fixtures.find((fixture) => ["NS", "TBD", "PST", "UPCOMING"].includes(fixture.status.toUpperCase())) || fixtures[0] || null;
+  } catch { return null; }
+}
+async function sendMessage(text, { retry = false } = {}) {
+  const message = text.trim(); if (!message || busy) return;
+  const asksSchedule = /\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio)\b/i.test(message);
+  busy = true; els.send.disabled = true;
+  if (!retry) { els.input.value = ""; autoResize(); addUserMessage(message); }
+  const typing = addTyping();
+  try {
+    let matchContext = findMentionedFixture(message);
+    if (!matchContext) matchContext = await findNextFixtureForMessage(message);
+    if (!matchContext && asksSchedule) matchContext = lastFixtureContext;
+    if (matchContext) lastFixtureContext = matchContext;
+    const data = await api("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        match_context: matchContext ? {
+          id: matchContext.id, home: matchContext.home, away: matchContext.away,
+          home_logo: matchContext.homeLogo, away_logo: matchContext.awayLogo,
+          competition: matchContext.competition,
+          kickoff: matchContext.time?.toISOString() || "",
+          status: matchContext.status,
+        } : null,
+      }),
+    });
+    typing.remove(); addBotMessage(data, { fixture: matchContext });
+  } catch (error) { typing.remove(); addBotMessage({ answer: `**No se completó la solicitud.** ${error.message}` }, { isError: true, retryMessage: message }); }
   finally { busy = false; els.send.disabled = false; els.input.focus(); }
 }
+els.messages.addEventListener("click", (event) => {
+  const retryButton = event.target.closest("[data-retry-message]");
+  if (retryButton) sendMessage(retryButton.dataset.retryMessage, { retry: true });
+});
 function autoResize() { els.input.style.height = "auto"; els.input.style.height = `${Math.min(els.input.scrollHeight, 120)}px`; }
 
 els.form.addEventListener("submit", (event) => { event.preventDefault(); sendMessage(els.input.value); });
@@ -213,14 +434,34 @@ els.menu.addEventListener("click", () => $("#ligas").scrollIntoView({ behavior: 
 
 function setView(view) {
   const isLive = view === "live";
-  $("#home-view").hidden = isLive;
+  const isUpcoming = view === "upcoming";
+  const isAdvanced = view === "advanced";
+  const isProfile = view === "profile";
+  const viewSelect = $("#mobile-view-select");
+  if (viewSelect) viewSelect.value = view;
+  $("#home-view").hidden = isLive || isUpcoming || isAdvanced || isProfile;
   $("#live-view").hidden = !isLive;
+  $("#upcoming-view").hidden = !isUpcoming;
+  $("#advanced-view").hidden = !isAdvanced;
+  $("#profile-view").hidden = !isProfile;
   document.querySelectorAll(".main-nav [data-view]").forEach((link) => link.classList.toggle("active", link.dataset.view === view));
+  document.querySelectorAll(".mobile-bottom-nav [data-view]").forEach((link) => {
+    const active = link.dataset.view === view;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  });
   if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null; }
+  if (upcomingTimer) { clearInterval(upcomingTimer); upcomingTimer = null; }
   if (isLive) {
     loadLiveMatches();
     liveRefreshTimer = setInterval(loadLiveMatches, 60_000);
   }
+  if (isUpcoming) {
+    loadUpcomingFixtures();
+    upcomingTimer = setInterval(loadUpcomingFixtures, 5 * 60_000);
+  }
+  if (isAdvanced) { loadAnalytics(); loadFootballCharts(); }
+  if (isProfile) renderProfile();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 document.querySelectorAll("[data-view]").forEach((control) => control.addEventListener("click", (event) => {
@@ -229,6 +470,8 @@ document.querySelectorAll("[data-view]").forEach((control) => control.addEventLi
   event.preventDefault();
   setView(view);
 }));
+$("#league-search").addEventListener("input", renderLeagues);
+$(".profile-button").addEventListener("click", () => setView("profile"));
 
 function liveStatus(match) {
   return `${match.status || ""} ${match.status_text || ""}`.trim().toLocaleLowerCase("en");
@@ -239,9 +482,10 @@ function statusIndicatesLive(match) {
   return /live|in.?play|progress|half.?time|\bht\b|extra.?time|penalt|\d{1,3}(?:\+\d+)?\s*['’]/.test(status);
 }
 function isLive(match) { return liveFeedFresh && statusIndicatesLive(match); }
-function isFinished(match) { return /finished|full.?time|\bft\b|ended/.test(liveStatus(match)); }
+function isFinished(match) { return /finished|full.?time|\bft\b|\baet\b|\bpen\b|ended/.test(liveStatus(match)); }
 function matchSlug(match) {
   if (match.slug) return String(match.slug);
+  if (match.id) return String(match.id);
   const parts = String(match.url || "").split("/").filter(Boolean);
   return parts.length >= 4 ? parts[parts.length - 2] : "";
 }
@@ -260,7 +504,7 @@ function renderLiveMatches() {
   $("#live-feed-title").textContent = liveFilter === "live" ? "En directo ahora" : liveFilter === "finished" ? "Partidos finalizados" : "Todos los partidos";
   if (!filtered.length) {
     const copy = liveFilter === "live"
-      ? "No se encontraron partidos en juego en este momento. Los marcadores se actualizarán automáticamente."
+      ? "No hay partidos en juego ahora en las 10 competiciones principales. Los marcadores se actualizarán automáticamente."
       : "No hay partidos para mostrar en esta categoría.";
     $("#live-matches").innerHTML = `<div class="live-empty"><span class="stat-ring">⚽</span><strong>${liveFilter === "live" ? "Sin partidos en directo" : "Sin resultados"}</strong><p>${copy}</p></div>`;
     return;
@@ -309,10 +553,10 @@ async function loadLiveDetails(slug) {
   renderLiveDetails(match);
   if (!slug) return;
   try {
-    const response = await fetch(`${LIVE_API}/match/?sport=football&slug=${encodeURIComponent(slug)}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) });
+    const response = await fetch(`${API_BASE}/api/football/fixtures/${encodeURIComponent(slug)}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    if (selectedLiveSlug === slug) { selectedLiveDetails = payload.match || payload; renderLiveDetails(match, selectedLiveDetails); }
+    if (selectedLiveSlug === slug) { selectedLiveDetails = payload; renderLiveDetails(match, selectedLiveDetails); }
   } catch {
     if (selectedLiveSlug === slug) { selectedLiveDetails = {}; renderLiveDetails(match, selectedLiveDetails); }
   }
@@ -321,7 +565,7 @@ async function loadLiveMatches() {
   const refreshButton = $("#live-refresh");
   refreshButton.classList.add("is-loading");
   try {
-    const response = await fetch(`${LIVE_API}/matches/?sport=football&limit=50&src=statstriker`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
+    const response = await fetch(`${API_BASE}/api/football/live`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     liveMatches = Array.isArray(payload.matches) ? payload.matches : [];
@@ -360,5 +604,820 @@ document.querySelectorAll(".main-nav .nav-link:not([data-view])").forEach((link)
   window.setTimeout(() => document.querySelector(target)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
 }));
 
+function loadFavoriteLeagues() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("statstriker_favorite_leagues") || "null");
+    return Array.isArray(saved) ? saved : ["4328", "4335"];
+  } catch { return ["4328", "4335"]; }
+}
+function saveFavoriteLeagues() { localStorage.setItem("statstriker_favorite_leagues", JSON.stringify(favoriteLeagueIds)); }
+function loadFavoriteTeams() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FAVORITE_TEAM_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((team) => team && team.id && team.name && team.leagueId && team.season) : [];
+  } catch { return []; }
+}
+function saveFavoriteTeams() { localStorage.setItem(FAVORITE_TEAM_KEY, JSON.stringify(favoriteTeams)); }
+function bogotaDate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+function shiftDate(date, amount) { const shifted = new Date(`${date}T12:00:00Z`); shifted.setUTCDate(shifted.getUTCDate() + amount); return shifted.toISOString().slice(0, 10); }
+function cachedUpcoming(day = selectedFixtureDate) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(FIXTURE_CACHE_KEY) || "null");
+    const entry = cached?.[day];
+    return entry && Date.now() - entry.savedAt < FIXTURE_CACHE_TTL && Array.isArray(entry.matches) ? entry.matches : null;
+  } catch { return null; }
+}
+function storeUpcoming(matches, day = selectedFixtureDate) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(FIXTURE_CACHE_KEY) || "{}");
+    cache[day] = { savedAt: Date.now(), matches };
+    const days = Object.keys(cache).sort((a, b) => cache[b].savedAt - cache[a].savedAt);
+    days.slice(30).forEach((key) => delete cache[key]);
+    localStorage.setItem(FIXTURE_CACHE_KEY, JSON.stringify(cache));
+  } catch { /* caché opcional */ }
+}
+function fixtureArray(payload) {
+  for (const key of ["fixtures", "matches", "events", "results", "data"]) {
+    if (Array.isArray(payload?.[key])) return payload[key];
+    if (Array.isArray(payload?.data?.[key])) return payload.data[key];
+  }
+  return [];
+}
+function fixtureTeamName(fixture, side) {
+  const value = fixture[side] || fixture[`${side}_team`] || fixture[`${side}_team_name`] || fixture[`${side}Team`] || fixture[`${side}TeamName`] || fixture.teams?.[side] || fixture.participants?.[side];
+  return typeof value === "string" ? value : value?.name || value?.team_name || "";
+}
+function fixtureTeamLogo(fixture, side) {
+  const value = fixture[`${side}_logo`] || fixture[`${side}Logo`] || fixture[`${side}LogoUrl`] || fixture.teams?.[side]?.logo || fixture.teams?.[side]?.image;
+  return safeImage(typeof value === "string" ? value : value?.url);
+}
+function normalizeFixture(fixture) {
+  let time = fixture.kickoff || fixture.start_time || fixture.startTime || fixture.utcDate || fixture.match_start || fixture.start_at || fixture.datetime || fixture.time || fixture.date || fixture.dateEvent;
+  const datePart = fixture.date || fixture.dateEvent;
+  const timePart = fixture.time || fixture.strTime || fixture.hour;
+  if (datePart && /^\d{4}-\d{2}-\d{2}$/.test(String(datePart)) && timePart && /^\d{1,2}:\d{2}/.test(String(timePart))) time = `${datePart}T${timePart}`;
+  const home = fixtureTeamName(fixture, "home"), away = fixtureTeamName(fixture, "away");
+  const competitionValue = fixture.competition || fixture.league || fixture.tournament || fixture.competition_name || fixture.league_name || fixture.strLeague || "Football";
+  const competition = typeof competitionValue === "string" ? competitionValue : competitionValue?.name || "Football";
+  const country = fixture.country || fixture.competition_country || fixture.league?.country || "";
+  const competitionLabel = country && !competition.toLocaleLowerCase("es").includes(country.toLocaleLowerCase("es")) ? `${competition} | ${country}` : competition;
+  return {
+    id: String(fixture.id || fixture.slug || `${home}-${away}-${time || ""}`), slug: fixture.slug || "",
+    home, away, homeLogo: fixtureTeamLogo(fixture, "home"), awayLogo: fixtureTeamLogo(fixture, "away"),
+    competition: competitionLabel,
+    competitionId: String(fixture.competition_id || fixture.league?.id || ""),
+    competitionLogo: safeImage(fixture.competitionLogo || fixture.competition_logo || fixture.league_logo || fixture.competition?.logo),
+    round: fixture.round || fixture.league?.round || "",
+    homeTeamId: String(fixture.home_id || fixture.teams?.home?.id || ""),
+    awayTeamId: String(fixture.away_id || fixture.teams?.away?.id || ""),
+    time: time ? new Date(time) : null, status: String(fixture.status || fixture.state || "upcoming"),
+    statusText: String(fixture.status_text || fixture.statusText || ""),
+    homeScore: fixture.home_score ?? fixture.goals?.home ?? null,
+    awayScore: fixture.away_score ?? fixture.goals?.away ?? null,
+    venue: fixture.venue || fixture.stadium || "", odds: fixture.odds || fixture.bookmakers || null,
+  };
+}
+function fixtureLeagueId(competition) {
+  const name = String(competition || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  const match = LEAGUES.filter((league) => name.includes(league.name.toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "")))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  if (match) return match.id;
+  const aliases = { "39": ["premier league", "english premier", "inglaterra"], "140": ["laliga", "la liga", "spanish la"], "135": ["serie a", "italian serie", "italia"], "78": ["bundesliga", "german bundes", "alemania"], "61": ["ligue 1", "french ligue", "francia"], "2": ["champions league", "uefa champions"], "3": ["europa league", "uefa europa"], "13": ["libertadores", "conmebol libertadores"], "71": ["brasileirao", "brazilian serie a"], "253": ["major league soccer", "mls"] };
+  return Object.entries(aliases).find(([, words]) => words.some((word) => name.includes(word)))?.[0] || "other";
+}
+function fixtureCountryId(competition) {
+  const name = String(competition || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  const match = COUNTRIES.find((country) => name.includes(country.name.toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "")));
+  return match?.id || "";
+}
+function isFavoriteFixture(competition, countries = readProfileData().countries || []) {
+  return favoriteLeagueIds.includes(fixtureLeagueId(competition)) || countries.includes(fixtureCountryId(competition));
+}
+function isFavoriteTeamFixture(fixture) {
+  const teamNames = [fixture.home, fixture.away].map((name) => String(name || "").toLocaleLowerCase("es"));
+  const teamIds = [fixture.homeTeamId, fixture.awayTeamId].map(String);
+  return favoriteTeams.some((team) => teamNames.includes(String(team.name).toLocaleLowerCase("es")) || teamIds.includes(String(team.id)));
+}
+function fixtureLocalDate(fixture) { return fixture.time && !Number.isNaN(fixture.time.valueOf()) ? bogotaDate(fixture.time) : ""; }
+function fixtureClock(fixture) {
+  if (!fixture.time || Number.isNaN(fixture.time.valueOf())) return "Hora pendiente";
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit" }).format(fixture.time);
+}
+function fixtureLongDate(fixture) {
+  if (!fixture.time || Number.isNaN(fixture.time.valueOf())) return "Fecha por confirmar";
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(fixture.time);
+}
+function selectedDateLabel() {
+  const date = new Date(`${selectedFixtureDate}T12:00:00-05:00`);
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(date);
+}
+function renderFixtureCard(fixture) {
+  const favorite = isFavoriteFixture(fixture.competition);
+  const competitionLogo = fixture.competitionLogo ? `<img src="${fixture.competitionLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽";
+  const homeLogo = fixture.homeLogo ? `<img src="${fixture.homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(fixture.home.slice(0, 1))}</span>`;
+  const awayLogo = fixture.awayLogo ? `<img src="${fixture.awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(fixture.away.slice(0, 1))}</span>`;
+  const status = fixture.status.toUpperCase();
+  const final = ["FT", "AET", "PEN"].includes(status);
+  const live = ["LIVE", "1H", "2H", "HT", "ET", "BT", "P"].includes(status);
+  const tag = /postpon|^pst$/.test(status.toLowerCase()) ? "Reprogramado" : final ? "Finalizado" : live ? "En vivo" : status === "CANC" ? "Cancelado" : "Programado";
+  const center = final && fixture.homeScore != null && fixture.awayScore != null
+    ? `${fixture.homeScore} – ${fixture.awayScore}` : live ? fixture.statusText || "En vivo" : fixtureClock(fixture);
+  const recommendation = quickAnalysisState.suggestions.find((item) => item.fixture_id === fixture.id);
+  const recommendationText = recommendation
+    ? `<div class="fixture-recommendation"><strong>Opci?n a revisar ? ${escapeHtml(recommendation.title || "An?lisis disponible")}</strong><span>${escapeHtml(recommendation.summary || "Revisa los datos antes de elegir un mercado.")}</span></div>`
+    : `<div class="fixture-recommendation"><strong>${quickAnalysisState.loading ? "Analizando este partido?" : quickAnalysisState.error ? "Mercados para revisar con datos limitados" : "Mercados para evaluar"}</strong><span>${quickAnalysisState.error ? "Consulta las estad?sticas disponibles antes de elegir." : "1X2 ? M?s/Menos 2.5 ? Ambos marcan"}</span></div>`;
+  return `<article class="fixture-card ${favorite ? "is-favorite" : ""}"><div class="fixture-card-top"><span class="fixture-league">${competitionLogo}${escapeHtml(fixture.competition)}</span><span class="fixture-status">${tag}</span></div><div class="fixture-matchup"><div class="fixture-club">${homeLogo}<span>${escapeHtml(fixture.home)}</span></div><div class="fixture-kickoff"><strong>${escapeHtml(center)}</strong><small>${escapeHtml(fixtureLongDate(fixture).split(",")[0])}</small></div><div class="fixture-club away">${awayLogo}<span>${escapeHtml(fixture.away)}</span></div></div><div class="fixture-card-meta"><span>${fixture.venue ? `⌖ ${escapeHtml(fixture.venue)}` : "Calendario oficial"}</span>${favorite ? `<span class="favorite-tag">★ En favoritos</span>` : ""}</div><div class="fixture-recommendation-label">An?lisis del partido y mercados</div><div class="fixture-markets"><span>1X2</span><span>Más/Menos 2.5</span><span>Ambos marcan</span></div>${recommendationText}<button class="fixture-analysis-button" type="button" data-analyze-fixture="${escapeHtml(fixture.id)}">Analizar con Chatbot <span>↗</span></button></article>`;
+}
+function renderFavoriteLeagues() {
+  const host = $("#favorite-leagues");
+  const featured = LEAGUES;
+  const selected = LEAGUES.filter((league) => favoriteLeagueIds.includes(league.id));
+  const quickChoices = [...new Map([...featured, ...selected].map((league) => [league.id, league])).values()];
+  host.innerHTML = quickChoices.map((league) => {
+    const logo = safeImage(league.logo);
+    const icon = logo ? `<img class="favorite-league-logo" src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "";
+    return `<label class="favorite-league"><input type="checkbox" value="${escapeHtml(league.id)}" ${favoriteLeagueIds.includes(league.id) ? "checked" : ""}><span class="favorite-check">&#10003;</span>${icon}<span class="favorite-name">${escapeHtml(league.name)}</span><i class="favorite-dot ${favoriteLeagueIds.includes(league.id) ? "on" : ""}"></i></label>`;
+  }).join("");
+  const select = $("#fixture-league-filter"), current = select.value;
+  select.innerHTML = `<option value="all">Todas las ligas</option>${LEAGUES.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(`${league.name} (${league.country || ""})`)}</option>`).join("")}`;
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+let recommendedTeamsRequest = 0;
+function renderRecommendedTeams(groups) {
+  const host = $("#recommended-teams-list");
+  recommendedTeamGroups = groups;
+  if (!groups.length) {
+    host.innerHTML = `<p class="no-analysis">Selecciona una liga favorita para ver los tres primeros equipos de su tabla.</p>`;
+    return;
+  }
+  host.innerHTML = groups.map(({ league, teams, error }) => {
+    const hasVerifiedRanks = (teams || []).some((team) => Number.isInteger(team.rank));
+    const rows = (teams || []).map((team) => {
+      const logo = safeImage(team.logo);
+      const preferredTeam = { id: String(team.team_id || team.id || ""), name: team.name, badge: team.logo || "", leagueId: String(league.id), leagueName: league.name, season: league.season };
+      const key = `${preferredTeam.leagueId}:${preferredTeam.id}`;
+      const isPreferred = favoriteTeams.some((item) => `${item.leagueId}:${item.id}` === key);
+      return `<div class="recommended-team-row"><span class="recommended-rank">${escapeHtml(String(team.rank || "–"))}</span>${logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(team.name.slice(0, 1))}</span>`}<strong>${escapeHtml(team.name)}</strong><small>${team.points == null ? "" : `${escapeHtml(String(team.points))} pts`}</small><button class="team-favorite-toggle ${isPreferred ? "is-preferred" : ""}" type="button" data-favorite-team="${escapeHtml(JSON.stringify(preferredTeam))}" aria-label="${isPreferred ? "Quitar de" : "Agregar a"} mis equipos preferidos" aria-pressed="${isPreferred}">${isPreferred ? "★" : "☆"}</button></div>`;
+    }).join("");
+    const descriptions = (teams || []).map((team) => String(team.description || "").toLocaleLowerCase("es"));
+    const isPartial = descriptions.some((description) => description.includes("parcial"));
+    const isCatalog = descriptions.some((description) => description.includes("no se pudo verificar"));
+    const basis = isPartial ? `<small class="recommended-basis">Clasificación parcial · partidos con resultado</small>` : isCatalog ? `<small class="recommended-basis">Equipos destacados · posiciones actuales por confirmar</small>` : "";
+    const title = hasVerifiedRanks ? league.name : `${league.name} · equipos destacados`;
+    return `<section class="recommended-league"><h3>${escapeHtml(title)}</h3>${basis}${rows || `<p class="no-analysis">Sigue la liga y compara sus equipos desde Estadísticas.</p>`}</section>`;
+  }).join("");
+}
+async function loadRecommendedTeams(ids = favoriteLeagueIds) {
+  const token = ++recommendedTeamsRequest;
+  const selected = LEAGUES.filter((league) => ids.includes(league.id) && league.season).slice(0, 10);
+  if (!selected.length) { renderRecommendedTeams([]); await loadMatches(); return []; }
+  const cacheKey = "statstriker_recommended_teams_v2";
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(cacheKey) || "{}"); } catch { cache = {}; }
+  const cachedGroups = selected.filter((league) => cache[`${league.id}:${league.season}`]?.expires > Date.now())
+    .map((league) => ({ league, teams: cache[`${league.id}:${league.season}`].teams }))
+    .filter((group) => group.teams.length);
+  if (cachedGroups.length) renderRecommendedTeams(cachedGroups);
+  else $("#recommended-teams-list").innerHTML = `<p class="no-analysis">Consultando las tablas de tus ligas…</p>`;
+  const freshGroups = [];
+  for (const league of selected) {
+    try {
+      const data = await api(`/api/football/standings?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`);
+      const teams = Array.isArray(data.teams) ? data.teams : [];
+      if (teams.length) cache[`${league.id}:${league.season}`] = { expires: Date.now() + 6 * 60 * 60 * 1000, teams };
+      else delete cache[`${league.id}:${league.season}`];
+      freshGroups.push({ league, teams });
+    } catch {
+      const old = cache[`${league.id}:${league.season}`];
+      freshGroups.push({ league, teams: old?.teams || [], error: true });
+    }
+  }
+  try { localStorage.setItem(cacheKey, JSON.stringify(cache)); } catch { /* almacenamiento opcional */ }
+  if (token === recommendedTeamsRequest) {
+    renderRecommendedTeams(freshGroups);
+    await loadMatches();
+  }
+  return freshGroups;
+}
+function renderQuickAnalysis(fixtures) {
+  const host = $("#quick-analysis-list");
+  const selected = fixtures.slice(0, 10);
+  if (!selected.length) {
+    quickAnalysisState = { key: "", loading: false, error: "", suggestions: [] };
+    host.innerHTML = `<p class="no-analysis">Las recomendaciones por partido aparecerán cuando haya encuentros en agenda.</p>`;
+    return;
+  }
+  const key = selected.map((fixture) => fixture.id).join("|");
+  if (key !== quickAnalysisState.key) {
+    quickAnalysisState = { key, loading: true, error: "", suggestions: [] };
+    host.innerHTML = `<p class="no-analysis">Preparando recomendaciones para ${selected.length} partidos…</p>`;
+    requestQuickAnalysis(selected, key);
+    return;
+  }
+  if (quickAnalysisState.loading) {
+    host.innerHTML = `<p class="no-analysis">Preparando recomendaciones para ${selected.length} partidos…</p>`;
+    return;
+  }
+  if (quickAnalysisState.error) {
+    host.innerHTML = `<p class="no-analysis">Usa estos mercados como referencia y revisa primero las estad?sticas disponibles.</p>`;
+    return;
+  }
+  const suggestions = new Map(quickAnalysisState.suggestions.map((item) => [item.fixture_id, item]));
+  host.innerHTML = selected.map((fixture) => {
+    const suggestion = suggestions.get(fixture.id) || {};
+    const logo = fixture.homeLogo ? `<img src="${fixture.homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(fixture.home.slice(0, 1))}</span>`;
+    const quality = suggestion.data_quality === "suficiente" ? "Datos disponibles" : "Datos limitados";
+    return `<button class="quick-analysis-item" type="button" data-analyze-fixture="${escapeHtml(fixture.id)}"><span class="quick-analysis-logo">${logo}</span><span class="quick-analysis-copy"><strong>${escapeHtml(fixture.home)} vs ${escapeHtml(fixture.away)}</strong><small>${escapeHtml(fixture.competition)} | ${escapeHtml(fixtureClock(fixture))}</small><b>${escapeHtml(suggestion.title || "Mercados para comparar")}</b><small>${escapeHtml(suggestion.summary || "Compara forma, alineaciones y cuotas antes de elegir.")}</small><em>${quality} | Análisis del partido</em></span><span class="quick-analysis-arrow">&#8250;</span></button>`;
+  }).join("");
+}
+async function requestQuickAnalysis(fixtures, key) {
+  const request = {
+    fixtures: fixtures.map((fixture) => ({
+      id: fixture.id, home: fixture.home, away: fixture.away,
+      competition: fixture.competition, kickoff: fixture.time?.toISOString() || "",
+      status: fixture.status || "NS",
+    })),
+  };
+  try {
+    const data = await api("/api/quick-analysis", { method: "POST", body: JSON.stringify(request), signal: AbortSignal.timeout(35000) });
+    if (quickAnalysisState.key !== key) return;
+    quickAnalysisState = { key, loading: false, error: "", suggestions: data.suggestions || [] };
+  } catch (error) {
+    if (quickAnalysisState.key !== key) return;
+    quickAnalysisState = { key, loading: false, error: error.message || "No se pudo cargar el análisis.", suggestions: [] };
+  }
+  renderQuickAnalysis(fixtures);
+  if (selectedFixtureDate && upcomingFixtures.length) renderUpcomingFixtures();
+}
+function renderUpcomingFixtures() {
+  const search = $("#fixture-search").value.trim().toLocaleLowerCase("es");
+  const league = $("#fixture-league-filter").value;
+  const favoriteCountries = readProfileData().countries || [];
+  const matches = upcomingFixtures.filter((fixture) => {
+    const day = fixtureLocalDate(fixture), leagueId = fixtureLeagueId(fixture.competition);
+    const textMatch = `${fixture.home} ${fixture.away} ${fixture.competition}`.toLocaleLowerCase("es").includes(search);
+    return day === selectedFixtureDate && textMatch && (league === "all" || leagueId === league);
+  });
+  if ($("#fixture-sort").value === "league") matches.sort((a, b) => a.competition.localeCompare(b.competition, "es") || a.time - b.time);
+  else matches.sort((a, b) => Number(isFavoriteTeamFixture(b)) - Number(isFavoriteTeamFixture(a)) || Number(isFavoriteFixture(b.competition, favoriteCountries)) - Number(isFavoriteFixture(a.competition, favoriteCountries)) || a.time - b.time);
+  $("#fixture-count-label").textContent = matches.length ? `${matches.length} partidos en esta fecha` : "No hay partidos para esta selección";
+  $("#fixture-date-label").textContent = `Agenda · ${selectedDateLabel()}`;
+  $("#fixtures-grid").innerHTML = matches.length ? matches.map(renderFixtureCard).join("") : `<div class="live-empty"><span class="stat-ring">▦</span><strong>Sin partidos para esta fecha</strong><p>Elige otro día del calendario anual o actualiza la consulta.</p></div>`;
+  renderQuickAnalysis(matches.filter((fixture) => ["NS", "TBD", "PST", "UPCOMING"].includes(fixture.status.toUpperCase()) || /not started|scheduled|program|postpon|upcoming/i.test(fixture.status)));
+}
+async function loadUpcomingFixtures(force = false) {
+  const requestId = ++upcomingRequestId;
+  const requestedDate = selectedFixtureDate;
+  const button = $("#fixture-refresh");
+  button.classList.add("is-loading");
+  if (!force) {
+    const cached = cachedUpcoming(requestedDate);
+    if (cached) { upcomingFixtures = cached.map(normalizeFixture); renderUpcomingFixtures(); button.classList.remove("is-loading"); return; }
+  }
+  try {
+    const preferredLeagues = [...new Set([...favoriteLeagueIds, ...favoriteTeams.map((team) => String(team.leagueId))])].filter((id) => FEATURED_LEAGUE_IDS.includes(id));
+    const params = new URLSearchParams({ from_date: requestedDate, to_date: requestedDate, leagues: preferredLeagues.join(",") });
+    const response = await fetch(`${API_BASE}/api/football/fixtures?${params}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(failure.detail || `HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (requestId !== upcomingRequestId) return;
+    const seen = new Set();
+    upcomingFixtures = fixtureArray(payload).map(normalizeFixture).filter((fixture) => {
+      const day = fixtureLocalDate(fixture), key = `${fixture.home}|${fixture.away}|${fixture.time?.toISOString() || ""}`;
+      if (!fixture.home || !fixture.away || !fixture.time || Number.isNaN(fixture.time.valueOf()) || day !== requestedDate || seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    storeUpcoming(upcomingFixtures, requestedDate);
+    const datesAvailable = [...new Set(upcomingFixtures.map(fixtureLocalDate))].length;
+    $("#fixture-updated").textContent = `Calendario actualizado · hora de Colombia · ${datesAvailable ? "API-Football" : "sin partidos para esta fecha"}`;
+    renderFavoriteLeagues(); renderUpcomingFixtures();
+  } catch (error) {
+    if (requestId !== upcomingRequestId) return;
+    if (!upcomingFixtures.length) {
+      renderQuickAnalysis([]);
+      $("#fixtures-grid").innerHTML = `<div class="live-empty"><strong>No se pudo cargar el calendario</strong><p>Comprueba la conexión y vuelve a intentarlo. No se muestran partidos de demostración como si fueran próximos.</p></div>`;
+      $("#fixture-count-label").textContent = "Calendario no disponible";
+    } else $("#fixture-updated").textContent = "No se pudo actualizar · se muestran los datos guardados";
+  } finally { if (requestId === upcomingRequestId) button.classList.remove("is-loading"); }
+}
+function selectedAnalyticsFixture() { return analyticsData?.matches.find((match) => match.id === selectedAnalyticsMatch) || analyticsData?.matches[0] || null; }
+function normalizeClubName(name) { return String(name || "").toLocaleLowerCase("es").replace(/^(fc|afc|ac|as|ssc|real|club)\s+/g, "").replace(/[^a-z0-9]/g, ""); }
+function analyticsTeamLogo(name) {
+  const target = normalizeClubName(name);
+  for (const teams of Object.values(catalog)) {
+    const found = teams.find((team) => {
+      const candidate = normalizeClubName(team.name);
+      return candidate === target || (Math.min(candidate.length, target.length) > 5 && (candidate.includes(target) || target.includes(candidate)));
+    });
+    if (found?.badge) return safeImage(found.badge);
+  }
+  return "";
+}
+function renderApiBarRows(selector, rows, emptyText) {
+  const host = $(selector);
+  if (!rows.length) { host.innerHTML = `<p class="api-chart-empty">${escapeHtml(emptyText)}</p>`; return; }
+  const max = Math.max(1, ...rows.map((row) => row.value));
+  host.innerHTML = rows.map((row) => `<div class="api-bar-row"><div class="api-bar-label"><span>${escapeHtml(row.label)}</span><strong>${row.value}</strong></div><div class="api-bar-track"><i class="${row.kind || ""}" style="width:${Math.max(row.value ? 5 : 0, row.value / max * 100)}%"></i></div></div>`).join("");
+}
+function renderApiLeagueRows(groups) {
+  const host = $("#api-league-chart");
+  const rows = [...groups.entries()].map(([label, values]) => ({ label, ...values, total: values.upcoming + values.live })).sort((a, b) => b.total - a.total).slice(0, 6);
+  if (!rows.length) { host.innerHTML = `<p class="api-chart-empty">No hay partidos disponibles en el rango actual.</p>`; return; }
+  const maxUpcoming = Math.max(1, ...rows.map((row) => row.upcoming)), maxLive = Math.max(1, ...rows.map((row) => row.live));
+  host.innerHTML = rows.map((row) => `<div class="api-league-row"><div class="api-bar-label"><span>${escapeHtml(row.label)}</span><strong>${row.upcoming} / ${row.live}</strong></div><div class="api-league-bars"><i class="api-upcoming-bar" style="width:${row.upcoming ? Math.max(5, row.upcoming / maxUpcoming * 100) : 0}%"></i><i class="api-live-bar" style="width:${row.live ? Math.max(5, row.live / maxLive * 100) : 0}%"></i></div></div>`).join("");
+}
+async function loadFootballCharts() {
+  const status = $("#api-charts-updated");
+  if (!status) return;
+  status.textContent = "Cargando datos de API-Football...";
+  const today = bogotaDate(), tomorrow = shiftDate(today, 1);
+  const params = new URLSearchParams({ from_date: today, to_date: tomorrow });
+  try {
+    const [liveResult, scheduleResult] = await Promise.allSettled([
+      api("/api/football/live"),
+      api(`/api/football/fixtures?${params}`),
+    ]);
+    if (liveResult.status === "rejected") throw liveResult.reason;
+    const live = (liveResult.value.matches || []).map(normalizeFixture);
+    const scheduled = scheduleResult.status === "fulfilled"
+      ? fixtureArray(scheduleResult.value).map(normalizeFixture).filter((match) => ["NS", "TBD", "PST"].includes(match.status.toUpperCase()))
+      : [];
+    const groups = new Map();
+    for (const match of scheduled) {
+      const row = groups.get(match.competition) || { upcoming: 0, live: 0 };
+      row.upcoming += 1; groups.set(match.competition, row);
+    }
+    for (const match of live) {
+      const row = groups.get(match.competition) || { upcoming: 0, live: 0 };
+      row.live += 1; groups.set(match.competition, row);
+    }
+    renderApiLeagueRows(groups);
+
+    const buckets = [["00-05", 0], ["06-11", 0], ["12-17", 0], ["18-23", 0]];
+    for (const match of scheduled) {
+      if (!match.time || Number.isNaN(match.time.valueOf())) continue;
+      const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Bogota", hour: "2-digit", hourCycle: "h23" }).format(match.time));
+      const bucket = Math.min(3, Math.floor(hour / 6));
+      buckets[bucket][1] += 1;
+    }
+    renderApiBarRows("#api-time-chart", buckets.map(([label, value]) => ({ label: `${label}:00`, value, kind: "api-upcoming-bar" })), "No hay próximos partidos.");
+
+    const goals = new Map();
+    for (const match of live) {
+      const count = Number(match.home_score || 0) + Number(match.away_score || 0);
+      goals.set(match.competition, (goals.get(match.competition) || 0) + count);
+    }
+    renderApiBarRows("#api-goals-chart", [...goals].map(([label, value]) => ({ label, value, kind: "api-live-bar" })).sort((a, b) => b.value - a.value).slice(0, 5), "No hay partidos en vivo en este momento.");
+    status.textContent = scheduleResult.status === "fulfilled"
+      ? `${scheduled.length} pr?ximos | ${live.length} en vivo | datos de API-Football`
+      : `${scheduled.length} pr?ximos | ${live.length} en vivo | calendario: ${scheduleResult.reason?.message || "no disponible"}`;
+  } catch (error) {
+    status.textContent = error.message || "No se pudieron cargar los datos de la API.";
+    renderApiLeagueRows(new Map());
+    renderApiBarRows("#api-time-chart", [], "Datos no disponibles.");
+    renderApiBarRows("#api-goals-chart", [], "Datos no disponibles.");
+  }
+}
+
+async function loadAnalyticsLogos(matches) {
+  const ids = [...new Set(matches.map((match) => fixtureLeagueId(match.competition)).filter((id) => id !== "other"))];
+  await Promise.allSettled(ids.map(async (id) => {
+    if (catalog[id]) return;
+    const cached = getCachedCatalog(id);
+    if (cached) { catalog[id] = cached; return; }
+    const league = LEAGUES.find((item) => item.id === id);
+    if (!league?.season) return;
+    const response = await api(`/api/football/teams?league=${encodeURIComponent(id)}&season=${encodeURIComponent(league.season)}`);
+    const teams = response.teams || [];
+    catalog[id] = teams; saveCachedCatalog(id, teams);
+  }));
+}
+function renderAnalyticsRanking() {
+  const teams = analyticsData?.teams || [];
+  if (!teams.length) { $("#analytics-team-ranking").innerHTML = `<p class="detail-unavailable">No hay métricas de equipos disponibles.</p>`; return; }
+  $("#analytics-team-ranking").innerHTML = teams.slice(0, 6).map((team, index) => {
+    const logo = analyticsTeamLogo(team.name);
+    const form = (team.form || []).map((result) => `<i class="form-dot ${result === "W" ? "is-win" : result === "D" ? "is-draw" : "is-loss"}" title="${result === "W" ? "Victoria" : result === "D" ? "Empate" : "Derrota"}"></i>`).join("");
+    return `<div class="ranking-row"><span class="ranking-position">${index + 1}.</span>${logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(team.name.slice(0,1))}</span>`}<div class="ranking-copy"><strong>${escapeHtml(team.name)}</strong><small>${escapeHtml(String(team.recent_win_rate ?? 0))}% victorias · últimos 5</small></div><div class="ranking-form" aria-label="Forma reciente">${form}</div></div>`;
+  }).join("");
+}
+function renderAnalyticsGoals() {
+  const teams = analyticsData?.teams || [];
+  const max = Math.max(3, ...teams.map((team) => Number(team.goals_scored_avg) || 0));
+  $("#analytics-goals-chart").innerHTML = teams.map((team) => {
+    const scored = Math.max(4, (Number(team.goals_scored_avg) || 0) / max * 100);
+    const conceded = Math.max(4, (Number(team.goals_conceded_avg) || 0) / max * 100);
+    return `<div class="goal-row"><span class="goal-team">${escapeHtml(team.name.split(" ").slice(-1)[0])}</span><div class="goal-bars"><i class="goal-for" style="--bar:${scored}%" title="${team.goals_scored_avg} goles a favor"></i><i class="goal-against" style="--bar:${conceded}%" title="${team.goals_conceded_avg} goles en contra"></i></div><span class="goal-number">${escapeHtml(String(team.goals_scored_avg ?? "—"))}</span></div>`;
+  }).join("");
+}
+function renderAnalyticsAttack(match) {
+  if (!match) { $("#analytics-attack-metrics").innerHTML = `<p class="detail-unavailable">Selecciona un partido para ver su comparativa.</p>`; return; }
+  const pairs = [[match.home, match.home_xg, match.home_corners], [match.away, match.away_xg, match.away_corners]];
+  const xgMax = 3;
+  $("#analytics-attack-metrics").innerHTML = `<div class="xg-pair">${pairs.map(([name, xg]) => {
+    const amount = Number(xg) || 0, percentage = Math.min(100, Math.round(amount / xgMax * 100));
+    const logo = analyticsTeamLogo(name);
+    return `<div class="xg-item"><div class="xg-ring" style="--value:${percentage}%">${logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<strong>${amount.toFixed(2)}</strong>`}</div><span>${escapeHtml(name)}</span><small>${amount.toFixed(2)} xG</small></div>`;
+  }).join("")}</div><div class="corners-pair">${pairs.map(([name, , corners]) => `<div class="corner-stat"><span>${escapeHtml(name)}</span><strong>${escapeHtml(String(corners ?? "—"))}</strong><small>córners/partido</small></div>`).join("")}</div>`;
+}
+function renderAnalyticsH2H(match) {
+  if (!match) { $("#analytics-h2h").innerHTML = `<p class="detail-unavailable">Selecciona un partido para consultar el historial.</p>`; return; }
+  const btts = Number(match.h2h_btts_pct) || 0, over = Number(match.h2h_over_2_5_pct) || 0;
+  const history = (match.h2h || []).map((result) => `<li>${escapeHtml(result)}</li>`).join("");
+  $("#analytics-h2h").innerHTML = `<div class="h2h-circles"><div><div class="h2h-ring" style="--value:${btts}%"><strong>${btts}%</strong></div><span>Ambos marcan</span></div><div><div class="h2h-ring aqua" style="--value:${over}%"><strong>${over}%</strong></div><span>Más de 2.5</span></div></div><p class="h2h-average"><strong>${escapeHtml(String(match.h2h_goal_average ?? "—"))}</strong> goles promedio · últimos ${history ? (match.h2h || []).length : 0} duelos</p><details class="h2h-history"><summary>Ver resultados anteriores</summary><ul>${history || "<li>Sin resultados de H2H disponibles.</li>"}</ul></details>`;
+}
+function renderAnalyticsProbabilities(match) {
+  if (!match) { $("#analytics-probabilities").innerHTML = `<p class="detail-unavailable">Selecciona un partido para ver la estimación derivada de las cuotas.</p>`; return; }
+  const rows = [["1", match.home, match.probabilities?.home, "home"], ["X", "Empate", match.probabilities?.draw, "draw"], ["2", match.away, match.probabilities?.away, "away"]];
+  $("#analytics-probabilities").innerHTML = `<div class="probability-list">${rows.map(([label, name, value, kind]) => `<div class="probability-row"><div class="probability-label"><span>${label}</span><strong>${escapeHtml(name)}</strong><b>${escapeHtml(String(value ?? "—"))}%</b></div><div class="probability-track"><i class="probability-fill ${kind}" style="--probability:${Number(value) || 0}%"></i></div></div>`).join("")}</div><p class="probability-disclaimer">Probabilidad implícita normalizada; no es una predicción garantizada.</p>`;
+}
+function renderAnalyticsRecommendations() {
+  const matches = analyticsData?.matches || [];
+  $("#analytics-recommendations").innerHTML = matches.length ? matches.map((match) => `<article class="analytics-recommendation"><div class="recommendation-comp">${escapeHtml(match.competition)}</div><h3>${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</h3><p>${match.h2h_goal_average != null ? `El H2H de muestra promedia ${escapeHtml(String(match.h2h_goal_average))} goles en ${(match.h2h || []).length} encuentros.` : "Hay métricas recientes disponibles para ambos equipos."}</p><button type="button" data-analyze-match="${escapeHtml(match.id)}">Analizar partido <span>↗</span></button></article>`).join("") : `<p class="detail-unavailable">No hay partidos suficientes para generar comparativas.</p>`;
+}
+function renderAnalytics() {
+  if (!analyticsData) return;
+  const select = $("#analytics-match-select"), previous = selectedAnalyticsMatch;
+  select.innerHTML = analyticsData.matches.map((match) => `<option value="${escapeHtml(match.id)}">${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</option>`).join("");
+  selectedAnalyticsMatch = analyticsData.matches.some((match) => match.id === previous) ? previous : analyticsData.matches[0]?.id || "";
+  select.value = selectedAnalyticsMatch;
+  const match = selectedAnalyticsFixture();
+  $("#analytics-source-note").innerHTML = `<span>ⓘ</span><span>Selecciona una liga y dos equipos para consultar la comparación de temporada. Los gráficos de la derecha resumen los partidos reales disponibles.</span>`;
+  $("#analytics-updated").textContent = `${analyticsData.matches.length} partidos · ${analyticsData.teams.length} equipos · muestra del ${escapeHtml(analyticsData.generated_at || "proyecto")}`;
+  renderAnalyticsRanking(); renderAnalyticsGoals(); renderAnalyticsAttack(match); renderAnalyticsH2H(match); renderAnalyticsProbabilities(match); renderAnalyticsRecommendations();
+}
+function renderComparisonTeamOptions(teams, select, placeholder) {
+  const previous = select.value;
+  select.innerHTML = `<option value="">${placeholder}</option>${teams.map((team) => `<option value="${escapeHtml(String(team.id))}">${escapeHtml(team.name)}</option>`).join("")}`;
+  if (teams.some((team) => String(team.id) === previous)) select.value = previous;
+  select.disabled = !teams.length;
+}
+function comparisonTeamsForSelectedPot(excludeId = "") {
+  const leagueId = $("#comparison-league")?.value;
+  const pot = $("#comparison-group")?.value;
+  return comparisonLeagueTeams.filter((team) =>
+    (leagueId !== "2" || String(team.pot) === String(pot)) && String(team.id) !== String(excludeId)
+  );
+}
+function configureComparisonGroup(leagueId) {
+  const field = $("#comparison-group-field"), controls = $(".comparison-controls"), group = $("#comparison-group");
+  if (!field || !group || !controls) return;
+  const isChampions = leagueId === "2";
+  field.hidden = !isChampions;
+  controls.classList.toggle("is-champions", isChampions);
+  if (isChampions) {
+    const previous = group.value;
+    group.innerHTML = [1, 2, 3, 4].map((pot) => `<option value="${pot}">Bombo ${pot}</option>`).join("");
+    group.value = ["1", "2", "3", "4"].includes(previous) ? previous : "1";
+  }
+}
+function applyComparisonPot() {
+  const one = $("#comparison-team-one"), two = $("#comparison-team-two");
+  if (!one || !two) return;
+  const selectedOne = one.value;
+  const teams = comparisonTeamsForSelectedPot();
+  renderComparisonTeamOptions(teams, one, "Selecciona el equipo 1");
+  if (selectedOne && teams.some((team) => team.id === selectedOne)) one.value = selectedOne;
+  renderComparisonTeamOptions(comparisonTeamsForSelectedPot(one.value), two, "Selecciona el equipo 2");
+  $("#comparison-status").textContent = `Bombo ${$("#comparison-group").value} · ${teams.length} equipos · elige dos para comparar.`;
+  $("#comparison-results").innerHTML = `<p class="detail-unavailable">Elige dos equipos del mismo bombo para ver la comparaciÃ³n disponible.</p>`;
+}
+async function initTeamComparison() {
+  const leagueSelect = $("#comparison-league");
+  if (!leagueSelect) return;
+  const current = leagueSelect.value;
+  leagueSelect.innerHTML = LEAGUES.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(league.name)}</option>`).join("");
+  leagueSelect.value = LEAGUES.some((league) => league.id === current) ? current : selectedLeague.id;
+  configureComparisonGroup(leagueSelect.value);
+  await loadComparisonTeams(leagueSelect.value);
+}
+async function loadComparisonTeams(leagueId) {
+  const league = LEAGUES.find((item) => item.id === leagueId);
+  const one = $("#comparison-team-one"), two = $("#comparison-team-two");
+  if (!league || !one || !two) return;
+  configureComparisonGroup(leagueId);
+  const token = ++comparisonRequestId;
+  $("#comparison-status").textContent = `Cargando los equipos de ${league.name}…`;
+  $("#comparison-results").innerHTML = `<p class="detail-unavailable">Elige los dos equipos para consultar sus estadísticas.</p>`;
+  one.disabled = true; two.disabled = true;
+  try {
+    const cachedTeams = catalog[league.id]?.length ? catalog[league.id] : getCachedCatalog(league.id);
+    const data = cachedTeams
+      ? { teams: cachedTeams }
+      : await api(`/api/football/teams?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`);
+    if (token !== comparisonRequestId) return;
+    comparisonLeagueTeams = (data.teams || []).map((team) => ({ ...team, id: String(team.id || team.team_id) })).filter((team) => team.id && team.name);
+    catalog[league.id] = comparisonLeagueTeams;
+    if (league.id === "2") {
+      $("#comparison-group").value = "1";
+      applyComparisonPot();
+      $("#comparison-status").textContent = `${comparisonLeagueTeams.length} clasificados · 4 bombos oficiales de 9 equipos.`;
+      return;
+    }
+    renderComparisonTeamOptions(comparisonLeagueTeams, one, "Selecciona el equipo 1");
+    renderComparisonTeamOptions(comparisonLeagueTeams, two, "Selecciona el equipo 2");
+    $("#comparison-status").textContent = comparisonLeagueTeams.length
+      ? `${comparisonLeagueTeams.length} equipos disponibles · Temporada ${league.season}`
+      : `No hay una plantilla disponible para ${league.name}.`;
+  } catch (error) {
+    if (token !== comparisonRequestId) return;
+    comparisonLeagueTeams = [];
+    renderComparisonTeamOptions([], one, "Equipos no disponibles");
+    renderComparisonTeamOptions([], two, "Equipos no disponibles");
+    $("#comparison-status").textContent = error.message || "No se pudieron cargar los equipos de la liga.";
+  }
+}
+function renderTeamComparison(home, away) {
+  const stats = [
+    ["Posición de liga", home.rank, away.rank], ["Puntos", home.points, away.points],
+    ["Partidos jugados", home.played, away.played], ["Victorias", home.wins, away.wins],
+    ["Goles a favor", home.goals_for, away.goals_for], ["Goles en contra", home.goals_against, away.goals_against],
+    ["Promedio de goles a favor", home.goals_for_avg, away.goals_for_avg], ["Porterías a cero", home.clean_sheets, away.clean_sheets],
+  ];
+  const teamCard = (team) => {
+    const logo = safeImage(team.team?.logo);
+    const form = team.form ? `<div class="comparison-form"><span>Forma reciente</span><b>${escapeHtml(team.form)}</b></div>` : "";
+    return `<div class="comparison-team"><div class="comparison-team-identity">${logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(team.team?.name || "?").slice(0,1))}</span>`}<strong>${escapeHtml(team.team?.name || "Equipo")}</strong></div>${form}</div>`;
+  };
+  const availableStats = stats.filter(([, left, right]) => left != null || right != null);
+  const statRows = availableStats.map(([label, left, right]) => {
+    const a = Number(left), b = Number(right), max = Math.max(a || 0, b || 0, 1);
+    const value = (item) => item == null ? "—" : Number.isInteger(Number(item)) ? String(item) : Number(item).toFixed(2);
+    return `<div class="comparison-stat-row"><span>${value(left)}</span><div><strong>${escapeHtml(label)}</strong><i><b style="--comparison-a:${Math.max(a ? 5 : 0, (a || 0) / max * 100)}%"></b><em style="--comparison-b:${Math.max(b ? 5 : 0, (b || 0) / max * 100)}%"></em></i></div><span>${value(right)}</span></div>`;
+  }).join("");
+  $("#comparison-results").innerHTML = `<div class="comparison-team-headings">${teamCard(home)}<span class="comparison-vs">VS</span>${teamCard(away)}</div><div class="comparison-stat-list"><div class="comparison-stat-labels"><span>${escapeHtml(home.team?.name || "Equipo 1")}</span><span>Estadística</span><span>${escapeHtml(away.team?.name || "Equipo 2")}</span></div>${statRows}</div><p class="comparison-data-note">Temporada actual · fuente ${escapeHtml(home.source || away.source || "proveedor disponible")}</p>`;
+}
+async function compareSelectedTeams() {
+  const league = LEAGUES.find((item) => item.id === $("#comparison-league").value);
+  const homeId = $("#comparison-team-one").value, awayId = $("#comparison-team-two").value;
+  if (!league || !homeId || !awayId || homeId === awayId) {
+    $("#comparison-status").textContent = "Selecciona una liga y dos equipos diferentes para comparar.";
+    return;
+  }
+  const token = ++comparisonRequestId;
+  const button = $("#comparison-submit");
+  button.disabled = true; button.textContent = "Consultando…";
+  $("#comparison-status").textContent = "Consultando estadísticas oficiales de la temporada…";
+  $("#comparison-results").innerHTML = `<p class="detail-unavailable">Cargando comparación…</p>`;
+  const teamName = (id) => comparisonLeagueTeams.find((team) => team.id === id)?.name || "";
+  const query = (id) => api(`/api/football/team-statistics?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}&team=${encodeURIComponent(id)}&team_name=${encodeURIComponent(teamName(id))}`);
+  try {
+    const [home, away] = await Promise.all([query(homeId), query(awayId)]);
+    if (token !== comparisonRequestId) return;
+    renderTeamComparison(home, away);
+    $("#comparison-status").textContent = `${league.name} · Temporada ${league.season}`;
+  } catch (error) {
+    if (token !== comparisonRequestId) return;
+    $("#comparison-results").innerHTML = `<p class="detail-unavailable">${escapeHtml(error.message || "No se pudieron obtener las estadísticas comparativas.")}</p>`;
+    $("#comparison-status").textContent = "No fue posible completar esta comparación.";
+  } finally {
+    if (token === comparisonRequestId) { button.disabled = false; button.textContent = "Comparar equipos"; }
+  }
+}
+$("#comparison-league").addEventListener("change", (event) => loadComparisonTeams(event.target.value));
+$("#comparison-group").addEventListener("change", applyComparisonPot);
+$("#comparison-team-one").addEventListener("change", () => {
+  const selected = $("#comparison-team-one").value;
+  const two = $("#comparison-team-two"), previous = two.value;
+  renderComparisonTeamOptions(comparisonTeamsForSelectedPot(selected), two, "Selecciona el equipo 2");
+  if (comparisonLeagueTeams.some((team) => team.id === previous) && previous !== selected) two.value = previous;
+});
+$("#comparison-submit").addEventListener("click", compareSelectedTeams);
+$("#analytics-refresh-teams").addEventListener("click", () => loadComparisonTeams($("#comparison-league").value));
+
+async function loadAnalytics(force = false) {
+  if (analyticsData && !force) { renderAnalytics(); return; }
+  const button = $("#analytics-refresh"); button.classList.add("is-loading");
+  try {
+    analyticsData = await api("/api/analytics");
+    await loadAnalyticsLogos(analyticsData.matches || []);
+    renderAnalytics();
+  } catch (error) {
+    $("#analytics-source-note").innerHTML = `<span>!</span><span>${escapeHtml(error.message || "No se pudieron cargar las estadísticas.")}</span>`;
+    $("#analytics-team-ranking").innerHTML = `<p class="detail-unavailable">No se pudo leer el dataset de estadísticas.</p>`;
+  } finally { button.classList.remove("is-loading"); }
+}
+function analyzeAnalyticsMatch(id = selectedAnalyticsMatch) {
+  const match = analyticsData?.matches.find((item) => item.id === id);
+  if (!match) return;
+  setView("home");
+  const prompt = `Analiza el partido ${match.home} vs ${match.away} de ${match.competition}. Revisa forma, goles, xG, H2H y cuotas disponibles; aclara cuando los datos sean de demostración y no afirmes certezas.`;
+  window.setTimeout(() => sendMessage(prompt), 120);
+}
+$("#analytics-match-select").addEventListener("change", (event) => {
+  selectedAnalyticsMatch = event.target.value;
+  const match = selectedAnalyticsFixture();
+  renderAnalyticsAttack(match); renderAnalyticsH2H(match); renderAnalyticsProbabilities(match);
+});
+$("#analytics-refresh").addEventListener("click", () => loadAnalytics(true));
+$("#api-charts-refresh").addEventListener("click", loadFootballCharts);
+$("#analytics-chat-button").addEventListener("click", () => analyzeAnalyticsMatch());
+$("#analytics-recommendations").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-analyze-match]");
+  if (button) analyzeAnalyticsMatch(button.dataset.analyzeMatch);
+});
+function readProfileData() {
+  try { return JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}"); }
+  catch { return {}; }
+}
+function selectedValues(selector) { return [...document.querySelectorAll(selector)].filter((input) => input.checked).map((input) => input.value); }
+function setProfileStatus(message, saved = false) {
+  const status = $("#profile-save-status");
+  status.textContent = message;
+  status.classList.toggle("saved", saved);
+}
+function renderProfileAvatar(photo = localStorage.getItem(AVATAR_STORAGE_KEY)) {
+  const host = $("#profile-avatar");
+  host.replaceChildren();
+  if (photo) {
+    const image = document.createElement("img"); image.src = photo; image.alt = "Foto de perfil"; host.appendChild(image);
+  } else {
+    const initial = document.createElement("span"); initial.id = "profile-avatar-initial"; initial.textContent = $("#profile-name").value.trim().slice(0, 1).toLocaleUpperCase("es") || "U"; host.appendChild(initial);
+  }
+}
+function renderProfileChoices() {
+  $("#profile-league-choices").innerHTML = LEAGUES.map((league) => {
+    const logo = safeImage(league.logo);
+    const icon = logo ? `<img class="profile-choice-logo" src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">${escapeHtml(league.flag || "?")}</span>`;
+    return `<label class="profile-choice" data-search="${escapeHtml(`${league.name} ${league.country || ""}`.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(league.id)}" data-profile-league><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(league.name)}${league.country ? ` ? ${escapeHtml(league.country)}` : ""}</span></label>`;
+  }).join("");
+  $("#profile-country-choices").innerHTML = COUNTRIES.map((country) => {
+    const flag = safeImage(country.flag);
+    const icon = flag ? `<img class="profile-choice-logo country-flag" src="${flag}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">??</span>`;
+    return `<label class="profile-choice" data-search="${escapeHtml(country.name.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(country.id)}" data-profile-country><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(country.name)}</span></label>`;
+  }).join("");
+}
+function updateProfileSummary() {
+  const leagueIds = selectedValues("[data-profile-league]"), countryIds = selectedValues("[data-profile-country]");
+  const leagues = LEAGUES.filter((league) => leagueIds.includes(league.id));
+  const countries = COUNTRIES.filter((country) => countryIds.includes(country.id));
+  const value = LEAGUES.length ? Math.round(leagues.length / LEAGUES.length * 100) : 0;
+  $("#profile-preference-donut").style.setProperty("--value", `${value}%`);
+  $("#profile-preference-total").textContent = String(leagues.length);
+  $("#profile-league-count").textContent = String(leagues.length);
+  $("#profile-country-count").textContent = String(countries.length);
+  $("#profile-summary-leagues").innerHTML = leagues.slice(0, 4).map((league) => `<li><i></i>${escapeHtml(league.name)}</li>`).join("") || `<li class="summary-empty">Aún no seleccionas ligas.</li>`;
+  const filterItems = [];
+  if (leagues.length) filterItems.push(`<li><span>•</span>Ligas priorizadas: ${leagues.map((league) => escapeHtml(league.name)).join(", ")}</li>`);
+  if (countries.length) filterItems.push(`<li><span>•</span>Países favoritos: ${countries.map((country) => escapeHtml(country.name)).join(", ")}</li>`);
+  $("#profile-active-filters").innerHTML = filterItems.join("") || `<li>Sin filtros favoritos seleccionados.</li>`;
+  $("#profile-personalization-copy").textContent = leagues.length
+    ? `La agenda priorizará tus ${leagues.length} ligas favoritas${countries.length ? ` y ${countries.length} países` : ""}.`
+    : "Selecciona ligas para destacarlas en la agenda y en sus sugerencias rápidas.";
+}
+function renderProfile() {
+  const profile = readProfileData();
+  $("#profile-name").value = profile.name || "";
+  $("#profile-email").value = profile.email || "";
+  $("#profile-phone").value = profile.phone || "";
+  renderProfileChoices();
+  const leagues = new Set(favoriteLeagueIds);
+  const countries = new Set(profile.countries || []);
+  document.querySelectorAll("[data-profile-league]").forEach((input) => { input.checked = leagues.has(input.value); });
+  document.querySelectorAll("[data-profile-country]").forEach((input) => { input.checked = countries.has(input.value); });
+  renderProfileAvatar(); updateProfileSummary(); setProfileStatus("Cambios locales", true);
+}
+function saveProfile() {
+  if (!$("#profile-form").reportValidity()) return;
+  const profile = {
+    name: $("#profile-name").value.trim(),
+    email: $("#profile-email").value.trim(),
+    phone: $("#profile-phone").value.trim(),
+    countries: selectedValues("[data-profile-country]"),
+  };
+  favoriteLeagueIds = selectedValues("[data-profile-league]");
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  saveFavoriteLeagues();
+  renderFavoriteLeagues(); updateProfileSummary();
+  loadRecommendedTeams(favoriteLeagueIds);
+  if (upcomingFixtures.length) renderUpcomingFixtures();
+  setProfileStatus("Preferencias guardadas en este dispositivo", true);
+}
+function resetProfile() {
+  localStorage.removeItem(PROFILE_STORAGE_KEY);
+  localStorage.removeItem(AVATAR_STORAGE_KEY);
+  favoriteLeagueIds = LEAGUES.some((league) => league.id === "39") ? ["39", "140"] : ["4328", "4335"];
+  saveFavoriteLeagues();
+  renderProfile(); renderFavoriteLeagues();
+  loadRecommendedTeams(favoriteLeagueIds);
+  if (upcomingFixtures.length) renderUpcomingFixtures();
+  setProfileStatus("Preferencias restablecidas", true);
+}
+function markProfileChanged() { updateProfileSummary(); setProfileStatus("Tienes cambios sin guardar"); }
+function handleProfilePhoto(file) {
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { setProfileStatus("Elige un archivo de imagen"); return; }
+  const objectUrl = URL.createObjectURL(file), image = new Image();
+  image.onload = () => {
+    const max = 512, scale = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    try {
+      const compressed = canvas.toDataURL("image/jpeg", 0.82);
+      localStorage.setItem(AVATAR_STORAGE_KEY, compressed); renderProfileAvatar(compressed); setProfileStatus("Foto guardada en este dispositivo", true);
+    } catch { setProfileStatus("No se pudo guardar la imagen. Elige una más pequeña."); }
+    URL.revokeObjectURL(objectUrl);
+  };
+  image.onerror = () => { URL.revokeObjectURL(objectUrl); setProfileStatus("No se pudo abrir esa imagen"); };
+  image.src = objectUrl;
+}
+renderProfileChoices();
+function filterProfileChoices(input, host) {
+  const query = input.value.trim().toLocaleLowerCase("es");
+  host.querySelectorAll(".profile-choice").forEach((choice) => { choice.hidden = !choice.dataset.search.includes(query); });
+}
+$("#profile-league-search").addEventListener("input", (event) => filterProfileChoices(event.target, $("#profile-league-choices")));
+$("#profile-country-search").addEventListener("input", (event) => filterProfileChoices(event.target, $("#profile-country-choices")));
+$("#profile-save").addEventListener("click", saveProfile);
+$("#profile-reset").addEventListener("click", resetProfile);
+$("#profile-form").addEventListener("submit", (event) => { event.preventDefault(); saveProfile(); });
+$("#profile-form").addEventListener("input", markProfileChanged);
+$("#profile-league-choices").addEventListener("change", () => { markProfileChanged(); loadRecommendedTeams(selectedValues("[data-profile-league]")); });
+$("#profile-country-choices").addEventListener("change", markProfileChanged);
+$("#profile-name").addEventListener("input", () => { if (!localStorage.getItem(AVATAR_STORAGE_KEY)) renderProfileAvatar(""); });
+$("#profile-photo-input").addEventListener("change", (event) => handleProfilePhoto(event.target.files?.[0]));
+$(".profile-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-profile-tab]");
+  if (!tab) return;
+  const selected = tab.dataset.profileTab;
+  document.querySelectorAll("[data-profile-tab]").forEach((button) => { const active = button === tab; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); });
+  $("#profile-leagues-panel").hidden = selected !== "leagues";
+  $("#profile-countries-panel").hidden = selected !== "countries";
+});
+function analyzeFixture(fixtureId) {
+  const fixture = upcomingFixtures.find((match) => match.id === fixtureId);
+  if (!fixture) return;
+  const prompt = `Analiza el partido ${fixture.home} vs ${fixture.away} de ${fixture.competition}. Fecha y hora: ${fixtureLongDate(fixture)}. Usa únicamente los datos disponibles y señala si falta información.`;
+  setView("home");
+  window.setTimeout(() => sendMessage(prompt), 120);
+}
+renderFavoriteLeagues();
+$("#fixture-selected-date").value = selectedFixtureDate;
+$("#fixture-selected-date").addEventListener("change", (event) => {
+  if (!event.target.value) return;
+  selectedFixtureDate = event.target.value;
+  localStorage.setItem("statstriker_selected_fixture_date", selectedFixtureDate);
+  upcomingFixtures = [];
+  loadUpcomingFixtures(true);
+});
+$("#fixture-today").addEventListener("click", () => {
+  selectedFixtureDate = bogotaDate();
+  $("#fixture-selected-date").value = selectedFixtureDate;
+  localStorage.setItem("statstriker_selected_fixture_date", selectedFixtureDate);
+  upcomingFixtures = [];
+  $("#fixtures-grid").innerHTML = `<div class="live-empty"><span class="loader"></span><p>Cargando partidos de hoy?</p></div>`;
+  loadUpcomingFixtures(true);
+});
+$("#fixture-search").addEventListener("input", renderUpcomingFixtures);
+$("#fixture-sort").addEventListener("change", renderUpcomingFixtures);
+$("#fixture-league-filter").addEventListener("change", renderUpcomingFixtures);
+$("#fixture-refresh").addEventListener("click", () => loadUpcomingFixtures(true));
+$("#favorite-leagues").addEventListener("change", (event) => {
+  const input = event.target.closest("input[type=checkbox]");
+  if (!input) return;
+  favoriteLeagueIds = input.checked
+    ? [...new Set([...favoriteLeagueIds, input.value])]
+    : favoriteLeagueIds.filter((id) => id !== input.value);
+  saveFavoriteLeagues(); renderFavoriteLeagues(); renderUpcomingFixtures(); loadRecommendedTeams(favoriteLeagueIds);
+});
+$("#recommended-teams-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-favorite-team]");
+  if (!button) return;
+  let team;
+  try { team = JSON.parse(button.dataset.favoriteTeam); } catch { return; }
+  const key = `${team.leagueId}:${team.id}`;
+  favoriteTeams = favoriteTeams.some((item) => `${item.leagueId}:${item.id}` === key)
+    ? favoriteTeams.filter((item) => `${item.leagueId}:${item.id}` !== key)
+    : [...favoriteTeams, team];
+  saveFavoriteTeams();
+  renderRecommendedTeams(recommendedTeamGroups);
+  loadMatches();
+});
+document.querySelectorAll("#fixtures-grid, #quick-analysis-list").forEach((host) => host.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-analyze-fixture]");
+  if (button) analyzeFixture(button.dataset.analyzeFixture);
+}));
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.closest(".upcoming-view, .advanced-view, .profile-view, .league-list, #favorite-leagues")) return;
+  const fallback = document.createElement("span"); fallback.className = "team-placeholder"; fallback.textContent = "⚽"; image.replaceWith(fallback);
+}, true);
+
 renderLeagues();
-(async () => { await loadHealth(); await Promise.all([loadLeague(selectedLeague.id), loadMatches(), loadHistory()]); })();
+(async () => {
+  await loadHealth();
+  await loadFootballLeagues();
+  await initTeamComparison();
+  if (!catalog[selectedLeague.id]) await loadLeague(selectedLeague.id);
+  if (!recommendedTeamGroups.length) await loadMatches();
+  await loadHistory();
+})();

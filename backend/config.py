@@ -48,10 +48,13 @@ class Settings:
     # --- LLM ---
     llm_provider: str = field(default_factory=lambda: _env_str("LLM_PROVIDER", "gemini").lower())
     gemini_api_key: str = field(default_factory=lambda: _env_str("GEMINI_API_KEY"))
-    gemini_model: str = field(default_factory=lambda: _env_str("GEMINI_MODEL", "gemini-4-hydrogen"))
+    gemini_model: str = field(default_factory=lambda: _env_str("GEMINI_MODEL", "gemini-3.8-flash"))
     openai_api_key: str = field(default_factory=lambda: _env_str("OPENAI_API_KEY"))
     openai_model: str = field(default_factory=lambda: _env_str("OPENAI_MODEL", "gpt-4o-mini"))
     llm_max_output_tokens: int = field(default_factory=lambda: _env_int("LLM_MAX_OUTPUT_TOKENS", 1500))
+
+    # --- API-Football (API-Sports) ---
+    football_api_key: str = field(default_factory=lambda: _env_str("API_SPORTS_KEY"))
 
     # --- Embeddings ---
     embedding_provider: str = field(default_factory=lambda: _env_str("EMBEDDING_PROVIDER", "local").lower())

@@ -138,8 +138,11 @@ Edita `.env` y define, por ejemplo:
 ```ini
 LLM_PROVIDER=gemini        # gemini | openai | mock
 GEMINI_API_KEY=tu_clave_aqui
+API_SPORTS_KEY=tu_clave_api_football
 EMBEDDING_PROVIDER=local   # local | gemini | openai
 ```
+
+`API_SPORTS_KEY` conecta los marcadores en vivo y el calendario de todas las ligas disponibles en tu plan de API-Football. La clave se usa únicamente en el backend y debe permanecer en `.env`.
 
 > 💡 Sin API key puedes usar `LLM_PROVIDER=mock` para probar ingesta, búsqueda vectorial y reglas del sistema experto.
 
@@ -152,13 +155,13 @@ python -m backend.ingest --reset
 **5. Arrancar el servidor**
 
 ```bash
-uvicorn backend.main:app --reload
+uvicorn backend.main:app --reload --port 8011
 
 # En Windows, si no activaste el entorno virtual (o PowerShell bloquea Activate.ps1):
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8011
 ```
 
-**6. Abrir la aplicación:** 👉 http://127.0.0.1:8000 · Documentación Swagger: http://127.0.0.1:8000/docs
+**6. Abrir la aplicación:** 👉 http://127.0.0.1:8011 · Documentación Swagger: http://127.0.0.1:8011/docs
 
 ## 🚀 Uso y Características
 
@@ -183,20 +186,20 @@ uvicorn backend.main:app --reload
 **Comprobar el estado:**
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8011/api/health
 ```
 
 **Consulta RAG desde PowerShell:**
 
 ```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:8000/api/chat -Method Post -ContentType "application/json" `
+Invoke-RestMethod -Uri http://127.0.0.1:8011/api/chat -Method Post -ContentType "application/json" `
   -Body '{"message":"Quiero apostar al Real Madrid y más de 2.5 goles","session_id":"test"}'
 ```
 
 **Consulta RAG con curl (macOS / Linux):**
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/chat \
+curl -X POST http://127.0.0.1:8011/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Combinada: gana Liverpool @3.10 y under 2.5 @2.00","session_id":"test"}'
 ```
