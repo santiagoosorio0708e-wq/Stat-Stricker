@@ -41,16 +41,46 @@ let LEAGUES = [
   { id: "253", name: "MLS", country: "USA", season: 2026, logo: "https://media.api-sports.io/football/leagues/253.png" },
   { id: "143", name: "Copa del Rey", country: "Spain", season: 2026, logo: "https://media.api-sports.io/football/leagues/143.png" },
 ];
-let COUNTRIES = [
-  { id: "England", name: "Inglaterra", flag: "https://media.api-sports.io/flags/gb.svg" },
-  { id: "Spain", name: "España", flag: "https://media.api-sports.io/flags/es.svg" },
-  { id: "Germany", name: "Alemania", flag: "https://media.api-sports.io/flags/de.svg" },
-  { id: "Italy", name: "Italia", flag: "https://media.api-sports.io/flags/it.svg" },
-  { id: "France", name: "Francia", flag: "https://media.api-sports.io/flags/fr.svg" },
-  { id: "World", name: "Competiciones internacionales", flag: "" },
-  { id: "Brazil", name: "Brasil", flag: "https://media.api-sports.io/flags/br.svg" },
-  { id: "USA", name: "Estados Unidos", flag: "https://media.api-sports.io/flags/us.svg" },
-];
+const COUNTRY_LABELS = {
+  England: "Inglaterra", Spain: "España", Germany: "Alemania", Italy: "Italia",
+  France: "Francia", World: "Competiciones internacionales", Brazil: "Brasil", USA: "Estados Unidos",
+  Scotland: "Escocia", Wales: "Gales",
+};
+function countryLabel(country) {
+  const key = String(country || "").trim();
+  return COUNTRY_LABELS[key] || key;
+}
+function buildAllCountries() {
+  const base = [
+    { id: "World", name: "Competiciones internacionales", flag: "" },
+    { id: "England", name: "Inglaterra", flag: "https://media.api-sports.io/flags/gb.svg" },
+    { id: "Scotland", name: "Escocia", flag: "https://flagcdn.com/w40/gb-sct.png" },
+    { id: "Wales", name: "Gales", flag: "https://flagcdn.com/w40/gb-wls.png" },
+    { id: "Spain", name: "España", flag: "https://media.api-sports.io/flags/es.svg" },
+    { id: "Germany", name: "Alemania", flag: "https://media.api-sports.io/flags/de.svg" },
+    { id: "Italy", name: "Italia", flag: "https://media.api-sports.io/flags/it.svg" },
+    { id: "France", name: "Francia", flag: "https://media.api-sports.io/flags/fr.svg" },
+    { id: "Brazil", name: "Brasil", flag: "https://media.api-sports.io/flags/br.svg" },
+    { id: "USA", name: "Estados Unidos", flag: "https://media.api-sports.io/flags/us.svg" },
+  ];
+  const alreadyCoveredIso = new Set(["ES", "DE", "IT", "FR", "BR", "US"]);
+  const isoCodes = (
+    "AF AL DZ AD AO AG SA AR AM AU AT AZ BS BH BD BB BE BZ BJ BY BO BA BW BG BF BI BT CV KH CM CA QA TD CL CN CY CO KM CG CD KP KR CR CI HR CU DK DM EC EG SV AE ER SK SI EE ET PH FI FJ GA GM GE GH GD GR GT GN GQ GW GY HT HN HU IN ID IQ IR IE IS IL JM JP JO KZ KE KG KI KW LA LS LV LB LR LY LI LT LU MK MG MY MW MV ML MT MA MU MR MX FM MD MC MN ME MZ MM NA NR NP NI NE NG NO NZ OM NL PK PW PA PG PY PE PL PT GB CF CZ DO RW RO RU WS KN SM VC LC ST SN RS SC SL SG SY SO LK ZA SD SS SE CH SR TH TZ TJ TL TG TO TT TN TM TR TV UA UG UY UZ VU VE VN YE DJ ZM ZW"
+  ).split(" ");
+  let regionNames = null;
+  try { regionNames = new Intl.DisplayNames(["es"], { type: "region" }); } catch { /* respaldo */ }
+  const extra = isoCodes
+    .filter((code) => !alreadyCoveredIso.has(code))
+    .map((code) => ({
+      id: code,
+      name: (regionNames && regionNames.of(code)) || code,
+      flag: `https://flagcdn.com/w40/${code.toLowerCase()}.png`,
+    }));
+  const international = base[0];
+  const rest = [...base.slice(1), ...extra].sort((a, b) => a.name.localeCompare(b.name, "es"));
+  return [international, ...rest];
+}
+let COUNTRIES = buildAllCountries();
 const RULE_LABELS = {
   persona_tipster: ["🎩 Analista", ""], reglas_innegociables: ["🛡️ Reglas base", ""],
   juego_responsable: ["🆘 Juego responsable", "red"], contexto_good: ["📚 Contexto suficiente", "green"],
@@ -187,8 +217,8 @@ function renderLeagues() {
   $("#league-count").textContent = String(filtered.length);
   els.leagueList.innerHTML = filtered.map((league) => {
     const image = safeImage(league.logo || league.country_flag);
-    const icon = image ? `<img src="${image}" alt="" loading="lazy" referrerpolicy="no-referrer">` : escapeHtml(league.flag || "?");
-    return `<button class="league-button ${league.id === selectedLeague.id ? "active" : ""}" type="button" data-league="${escapeHtml(league.id)}"><span class="league-flag">${icon}</span><span class="league-button-copy"><strong>${escapeHtml(league.name)}</strong><small>${escapeHtml(league.country || "")}</small></span></button>`;
+    const icon = image ? `<img src="${image}" alt="" loading="lazy" referrerpolicy="no-referrer">` : escapeHtml(league.flag || "⚽");
+    return `<button class="league-button ${league.id === selectedLeague.id ? "active" : ""}" type="button" data-league="${escapeHtml(league.id)}"><span class="league-flag">${icon}</span><span class="league-button-copy"><strong>${escapeHtml(league.name)}</strong><small>${escapeHtml(countryLabel(league.country))}</small></span></button>`;
   }).join("") || `<p class="loading-state">No se encontraron ligas.</p>`;
 }
 function renderTeams(teams) {
@@ -237,7 +267,7 @@ async function loadFootballLeagues() {
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
     if (cached?.expires > Date.now() && Array.isArray(cached.leagues)) leagues = cached.leagues;
-  } catch { /* cach? opcional */ }
+  } catch { /* caché opcional */ }
   try {
     if (!leagues.length) {
       const data = await api("/api/football/leagues");
@@ -252,9 +282,15 @@ async function loadFootballLeagues() {
     LEAGUES = leagues.map((league) => ({ ...league, id: String(league.id), flag: "", apiName: league.name }));
     if (!LEAGUES.some((league) => league.id === "143")) LEAGUES.push({ id: "143", name: "Copa del Rey", country: "Spain", season: 2026, logo: "https://media.api-sports.io/football/leagues/143.png", flag: "" });
     if (!favoriteLeagueIds.length) favoriteLeagueIds = ["39", "140"];
-    const countries = new Map();
-    LEAGUES.forEach((league) => { if (league.country) countries.set(league.country, { id: league.country, name: league.country, flag: league.country_flag || "" }); });
-    if (countries.size) COUNTRIES = [...countries.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
+    const existingIds = new Set(COUNTRIES.map((country) => country.id));
+    LEAGUES.forEach((league) => {
+      if (league.country && !existingIds.has(league.country)) {
+        existingIds.add(league.country);
+        COUNTRIES.push({ id: league.country, name: countryLabel(league.country), flag: league.country_flag || "" });
+      }
+    });
+    const [intl, ...restCountries] = COUNTRIES;
+    COUNTRIES = [intl, ...restCountries.sort((a, b) => a.name.localeCompare(b.name, "es"))];
     selectedLeague = LEAGUES.find((league) => league.id === selectedId) || LEAGUES.find((league) => favoriteLeagueIds.includes(league.id)) || LEAGUES[0];
     saveFavoriteLeagues();
     renderLeagues(); renderFavoriteLeagues(); renderProfileChoices();
@@ -263,7 +299,7 @@ async function loadFootballLeagues() {
     await loadRecommendedTeams(favoriteLeagueIds);
     await initTeamComparison();
   } catch (error) {
-    console.warn("No se pudo cargar el cat?logo ampliado de ligas:", error.message);
+    console.warn("No se pudo cargar el catálogo ampliado de ligas:", error.message);
   }
 }
 
@@ -393,6 +429,35 @@ function createConversation() {
   saveConversations(); sessionId = id; localStorage.setItem(SESSION_KEY, id);
   lastFixtureContext = null; els.send.disabled = false; renderConversations(); renderWelcomeMessage(); els.input.value = ""; autoResize(); els.input.focus();
 }
+async function deleteCurrentConversation() {
+  const current = activeConversation();
+  const title = current?.title || "esta conversación";
+  if (!confirm(`¿Terminar y eliminar "${title}"?`)) return;
+  const targetId = sessionId;
+  pendingChats.delete(targetId);
+  try { await api(`/api/history/${encodeURIComponent(targetId)}`, { method: "DELETE" }); } catch { /* si no existe en BD, continuamos */ }
+  conversations = conversations.filter((item) => item.id !== targetId);
+  if (conversations.length) {
+    const next = conversations.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    saveConversations();
+    sessionId = next.id;
+    localStorage.setItem(SESSION_KEY, sessionId);
+    lastFixtureContext = restoreFixtureContext(next.matchContext);
+    els.send.disabled = pendingChats.has(sessionId);
+    renderConversations();
+    await loadHistory();
+  } else {
+    createConversation();
+  }
+}
+async function deleteAllConversations() {
+  if (!confirm("¿Terminar y eliminar TODAS las conversaciones guardadas?")) return;
+  const ids = conversations.map((item) => item.id);
+  ids.forEach((id) => pendingChats.delete(id));
+  await Promise.allSettled(ids.map((id) => api(`/api/history/${encodeURIComponent(id)}`, { method: "DELETE" })));
+  conversations = [];
+  createConversation();
+}
 function normalizeMention(text) {
   return String(text || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -517,6 +582,8 @@ function autoResize() { els.input.style.height = "auto"; els.input.style.height 
 
 els.form.addEventListener("submit", (event) => { event.preventDefault(); sendMessage(els.input.value); });
 $("#new-conversation")?.addEventListener("click", createConversation);
+$("#delete-conversation")?.addEventListener("click", deleteCurrentConversation);
+$("#delete-all-conversations")?.addEventListener("click", deleteAllConversations);
 $("#conversation-picker")?.addEventListener("change", (event) => switchConversation(event.target.value));
 function applyPreferencesState(enabled) {
   const card = $(".preferences-card"), toggle = $(".preferences-card .switch");
@@ -637,7 +704,7 @@ function renderLiveMatches() {
     const clock = formatMatchClock(match);
     const live = isLive(match);
     const homeLogo = safeImage(match.home_logo), awayLogo = safeImage(match.away_logo), leagueLogo = safeImage(match.competition_logo);
-    return `<article class="live-match-card ${selected ? "selected" : ""}" tabindex="0" role="button" data-live-slug="${escapeHtml(slug)}" aria-label="Ver ${escapeHtml(match.home)} contra ${escapeHtml(match.away)}"><div class="live-card-league">${leagueLogo ? `<img src="${leagueLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽"}<span>${escapeHtml(match.competition || "Fútbol")}</span></div><div class="live-card-score"><div class="live-card-team">${homeLogo ? `<img src="${homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.home || "?").slice(0,1))}</span>`}<span>${escapeHtml(match.home || "Local")}</span></div><div class="live-score">${escapeHtml(match.home_score ?? "–")} - ${escapeHtml(match.away_score ?? "–")}<small class="live-status ${isFinished(match) ? "finished" : live ? "" : "scheduled"}">${escapeHtml(clock)}</small></div><div class="live-card-team away">${awayLogo ? `<img src="${awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.away || "?").slice(0,1))}</span>`}<span>${escapeHtml(match.away || "Visitante")}</span></div></div><div class="live-card-footer"><span>${live ? "● EN DIRECTO" : isFinished(match) ? "JORNADA FINALIZADA" : "PARTIDO"}</span><strong>${escapeHtml(clock)}</strong></div></article>`;
+    return `<article class="live-match-card ${selected ? "selected" : ""}" tabindex="0" role="button" data-live-slug="${escapeHtml(slug)}" aria-label="Ver ${escapeHtml(match.home)} contra ${escapeHtml(match.away)}"><div class="live-card-league">${leagueLogo ? `<img src="${leagueLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽"}<span>${escapeHtml(match.competition || "Fútbol")}</span></div><div class="live-card-score"><div class="live-card-team">${homeLogo ? `<img src="${homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.home || "L").slice(0,1))}</span>`}<span>${escapeHtml(match.home || "Local")}</span></div><div class="live-score">${escapeHtml(match.home_score ?? "–")} - ${escapeHtml(match.away_score ?? "–")}<small class="live-status ${isFinished(match) ? "finished" : live ? "" : "scheduled"}">${escapeHtml(clock)}</small></div><div class="live-card-team away">${awayLogo ? `<img src="${awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(match.away || "V").slice(0,1))}</span>`}<span>${escapeHtml(match.away || "Visitante")}</span></div></div><div class="live-card-footer"><span>${live ? "● EN DIRECTO" : isFinished(match) ? "JORNADA FINALIZADA" : "PARTIDO"}</span><strong>${escapeHtml(clock)}</strong></div></article>`;
   }).join("");
 }
 function statLabel(name) {
@@ -875,8 +942,8 @@ function renderFixtureCard(fixture) {
     ? `${fixture.homeScore} – ${fixture.awayScore}` : live ? fixture.statusText || "En vivo" : fixtureClock(fixture);
   const recommendation = quickAnalysisState.suggestions.find((item) => item.fixture_id === fixture.id);
   const recommendationText = recommendation
-    ? `<div class="fixture-recommendation"><strong>Opci?n a revisar ? ${escapeHtml(recommendation.title || "An?lisis disponible")}</strong><span>${escapeHtml(recommendation.summary || "Revisa los datos antes de elegir un mercado.")}</span></div>`
-    : `<div class="fixture-recommendation"><strong>${quickAnalysisState.loading ? "Analizando este partido?" : quickAnalysisState.error ? "Mercados para revisar con datos limitados" : "Mercados para evaluar"}</strong><span>${quickAnalysisState.error ? "Consulta las estad?sticas disponibles antes de elegir." : "1X2 ? M?s/Menos 2.5 ? Ambos marcan"}</span></div>`;
+    ? `<div class="fixture-recommendation"><strong>Opción a revisar: ${escapeHtml(recommendation.title || "Análisis disponible")}</strong><span>${escapeHtml(recommendation.summary || "Revisa los datos disponibles antes de elegir un mercado.")}</span></div>`
+    : `<div class="fixture-recommendation"><strong>${quickAnalysisState.loading ? "Analizando este partido…" : quickAnalysisState.error ? "Mercados para revisar con datos limitados" : "Mercados para evaluar"}</strong><span>${quickAnalysisState.error ? "Consulta las estadísticas disponibles antes de elegir un mercado." : "1X2, Más o Menos de 2.5 goles y Ambos equipos marcan"}</span></div>`;
   return `<article class="fixture-card ${favorite ? "is-favorite" : ""}"><div class="fixture-card-top"><span class="fixture-league">${competitionLogo}${escapeHtml(fixture.competition)}</span><span class="fixture-status">${tag}</span></div><div class="fixture-matchup"><div class="fixture-club">${homeLogo}<span>${escapeHtml(fixture.home)}</span></div><div class="fixture-kickoff"><strong>${escapeHtml(center)}</strong><small>${escapeHtml(fixtureLongDate(fixture) + " - hora de Colombia")}</small></div><div class="fixture-club away">${awayLogo}<span>${escapeHtml(fixture.away)}</span></div></div><div class="fixture-card-meta"><span>${fixture.venue ? `⌖ ${escapeHtml(fixture.venue)}` : "Calendario oficial"}</span>${favorite ? `<span class="favorite-tag">★ En favoritos</span>` : ""}</div><div class="fixture-recommendation-label">Análisis del partido y mercados</div><div class="fixture-markets"><span>1X2</span><span>Más/Menos 2.5</span><span>Ambos marcan</span></div>${recommendationText}<button class="fixture-analysis-button" type="button" data-analyze-fixture="${escapeHtml(fixture.id)}">Analizar con Chatbot <span>↗</span></button></article>`;
 }
 function renderFavoriteLeagues() {
@@ -890,7 +957,7 @@ function renderFavoriteLeagues() {
     return `<label class="favorite-league"><input type="checkbox" value="${escapeHtml(league.id)}" ${favoriteLeagueIds.includes(league.id) ? "checked" : ""}><span class="favorite-check">&#10003;</span>${icon}<span class="favorite-name">${escapeHtml(league.name)}</span><i class="favorite-dot ${favoriteLeagueIds.includes(league.id) ? "on" : ""}"></i></label>`;
   }).join("");
   const select = $("#fixture-league-filter"), current = select.value;
-  select.innerHTML = `<option value="all">Todas las ligas</option>${LEAGUES.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(`${league.name} (${league.country || ""})`)}</option>`).join("")}`;
+  select.innerHTML = `<option value="all">Todas las ligas</option>${LEAGUES.map((league) => `<option value="${escapeHtml(league.id)}">${escapeHtml(`${league.name} (${countryLabel(league.country)})`)}</option>`).join("")}`;
   if ([...select.options].some((option) => option.value === current)) select.value = current;
 }
 let recommendedTeamsRequest = 0;
@@ -970,7 +1037,7 @@ function renderQuickAnalysis(fixtures) {
     return;
   }
   if (quickAnalysisState.error) {
-    host.innerHTML = `<p class="no-analysis">Usa estos mercados como referencia y revisa primero las estad?sticas disponibles.</p>`;
+    host.innerHTML = `<p class="no-analysis">Usa estos mercados como referencia y revisa primero las estadísticas disponibles.</p>`;
     return;
   }
   const suggestions = new Map(quickAnalysisState.suggestions.map((item) => [item.fixture_id, item]));
@@ -1123,8 +1190,8 @@ async function loadFootballCharts() {
     }
     renderApiBarRows("#api-goals-chart", [...goals].map(([label, value]) => ({ label, value, kind: "api-live-bar" })).sort((a, b) => b.value - a.value).slice(0, 5), "No hay partidos en vivo en este momento.");
     status.textContent = scheduleResult.status === "fulfilled"
-      ? `${scheduled.length} pr?ximos | ${live.length} en vivo | datos de API-Football`
-      : `${scheduled.length} pr?ximos | ${live.length} en vivo | calendario: ${scheduleResult.reason?.message || "no disponible"}`;
+      ? `${scheduled.length} próximos | ${live.length} en vivo | datos de API-Football`
+      : `${scheduled.length} próximos | ${live.length} en vivo | calendario: ${scheduleResult.reason?.message || "no disponible"}`;
   } catch (error) {
     status.textContent = error.message || "No se pudieron cargar los datos de la API.";
     renderApiLeagueRows(new Map());
@@ -1234,7 +1301,7 @@ function applyComparisonPot() {
   if (selectedOne && teams.some((team) => team.id === selectedOne)) one.value = selectedOne;
   renderComparisonTeamOptions(comparisonTeamsForSelectedPot(one.value), two, "Selecciona el equipo 2");
   $("#comparison-status").textContent = `Bombo ${$("#comparison-group").value} · ${teams.length} equipos · elige dos para comparar.`;
-  $("#comparison-results").innerHTML = `<p class="detail-unavailable">Elige dos equipos del mismo bombo para ver la comparaciÃ³n disponible.</p>`;
+  $("#comparison-results").innerHTML = `<p class="detail-unavailable">Elige dos equipos del mismo bombo para ver la comparación disponible.</p>`;
 }
 async function initTeamComparison() {
   const leagueSelect = $("#comparison-league");
@@ -1425,13 +1492,14 @@ function renderProfileAvatar(photo = localStorage.getItem(AVATAR_STORAGE_KEY)) {
 function renderProfileChoices() {
   $("#profile-league-choices").innerHTML = LEAGUES.map((league) => {
     const logo = safeImage(league.logo);
-    const icon = logo ? `<img class="profile-choice-logo" src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">${escapeHtml(league.flag || "?")}</span>`;
-    return `<label class="profile-choice" data-search="${escapeHtml(`${league.name} ${league.country || ""}`.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(league.id)}" data-profile-league><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(league.name)}${league.country ? ` ? ${escapeHtml(league.country)}` : ""}</span></label>`;
+    const icon = logo ? `<img class="profile-choice-logo" src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">${escapeHtml(league.flag || "⚽")}</span>`;
+    const countryName = countryLabel(league.country);
+    return `<label class="profile-choice" data-search="${escapeHtml(`${league.name} ${league.country || ""} ${countryName}`.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(league.id)}" data-profile-league><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(league.name)}${countryName ? ` · ${escapeHtml(countryName)}` : ""}</span></label>`;
   }).join("");
   $("#profile-country-choices").innerHTML = COUNTRIES.map((country) => {
     const flag = safeImage(country.flag);
-    const icon = flag ? `<img class="profile-choice-logo country-flag" src="${flag}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">??</span>`;
-    return `<label class="profile-choice" data-search="${escapeHtml(country.name.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(country.id)}" data-profile-country><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(country.name)}</span></label>`;
+    const icon = flag ? `<img class="profile-choice-logo country-flag" src="${flag}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="profile-choice-flag">🌍</span>`;
+    return `<label class="profile-choice" data-search="${escapeHtml(`${country.name} ${country.id}`.toLocaleLowerCase("es"))}"><input type="checkbox" value="${escapeHtml(country.id)}" data-profile-country><span class="profile-choice-check">&#10003;</span>${icon}<span>${escapeHtml(country.name)}</span></label>`;
   }).join("");
 }
 function updateProfileSummary() {
@@ -1554,7 +1622,7 @@ $("#fixture-today").addEventListener("click", () => {
   $("#fixture-selected-date").value = selectedFixtureDate;
   localStorage.setItem("statstriker_selected_fixture_date", selectedFixtureDate);
   upcomingFixtures = [];
-  $("#fixtures-grid").innerHTML = `<div class="live-empty"><span class="loader"></span><p>Cargando partidos de hoy?</p></div>`;
+  $("#fixtures-grid").innerHTML = `<div class="live-empty"><span class="loader"></span><p>Cargando partidos de hoy…</p></div>`;
   loadUpcomingFixtures(true);
 });
 $("#fixture-search").addEventListener("input", renderUpcomingFixtures);

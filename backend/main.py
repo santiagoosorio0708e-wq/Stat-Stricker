@@ -165,8 +165,8 @@ def _quick_analysis_from_tables(fixtures: list[dict[str, Any]]) -> list[dict[str
     """Return useful market prompts immediately without making live provider calls."""
     return [{
         "fixture_id": str(fixture.get("id", "")),
-        "title": "Compara 1X2, goles y ambos marcan",
-        "summary": "Revisa la forma reciente de ambos equipos, alineaciones y cuotas antes de elegir un mercado.",
+        "title": "Resultado final, total de goles y ambos equipos marcan",
+        "summary": "Revisa la racha de los últimos 5 partidos de ambos equipos, bajas confirmadas y cuotas antes de elegir un mercado.",
         "data_quality": "limitada",
         "basis": "",
     } for fixture in fixtures]

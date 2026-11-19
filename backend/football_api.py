@@ -127,11 +127,11 @@ def _uefa_champions_standings() -> list[dict[str, Any]]:
             payload = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("No se pudo consultar la tabla UEFA (%s)", type(exc).__name__)
-        raise FootballAPIError("La tabla oficial de UEFA no estÃ¡ disponible en este momento.", 502) from exc
+        raise FootballAPIError("La tabla oficial de UEFA no está disponible en este momento.", 502) from exc
     if isinstance(payload, list) and payload and isinstance(payload[0], dict):
         payload = payload[0]
     if not isinstance(payload, dict):
-        raise FootballAPIError("UEFA devolviÃ³ un formato de tabla inesperado.", 502)
+        raise FootballAPIError("UEFA devolvió un formato de tabla inesperado.", 502)
     items = payload.get("items") or []
     rows = []
     for item in items:
@@ -150,10 +150,10 @@ def _uefa_champions_standings() -> list[dict[str, Any]]:
             "goal_difference": item.get("goalDifference"),
             "goals_for_avg": round(item["goalsFor"] / played, 2) if isinstance(item.get("goalsFor"), (int, float)) and isinstance(played, (int, float)) and played else None,
             "goals_against_avg": round(item["goalsAgainst"] / played, 2) if isinstance(item.get("goalsAgainst"), (int, float)) and isinstance(played, (int, float)) and played else None,
-            "form": "", "description": "ClasificaciÃ³n oficial UEFA · fase liga 2026/27",
+            "form": "", "description": "Clasificación oficial UEFA · fase liga 2026/27",
         })
     if len(rows) != 36:
-        raise FootballAPIError("UEFA no devolviÃ³ los 36 equipos de la fase liga.", 502)
+        raise FootballAPIError("UEFA no devolvió los 36 equipos de la fase liga.", 502)
     with _cache_lock:
         _cache[cache_key] = (time.monotonic() + 10 * 60, rows)
     return rows
@@ -566,7 +566,7 @@ def _thesportsdb_season_leaders(league_id: str) -> list[dict[str, Any]]:
                 "team_id": team_id, "name": name, "logo": event.get(f"str{side}TeamBadge") or "",
                 "played": 0, "wins": 0, "draws": 0, "loses": 0,
                 "goals_for": 0, "goals_against": 0, "points": 0, "form": "",
-                "description": "Clasificaci?n parcial: solo partidos con resultado en la muestra p?blica.",
+                "description": "Clasificación parcial: solo partidos con resultado en la muestra pública.",
             })
             row["played"] += 1
             row["goals_for"] += scored
@@ -890,7 +890,7 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
                     "source": "UEFA · tabla oficial de fase liga 2026/27",
                 }
         except FootballAPIError:
-            logger.info("Se usarÃ¡ el respaldo para comparar este club de Champions.")
+            logger.info("Se usará el respaldo para comparar este club de Champions.")
     try:
         payload = _request(
             "teams/statistics",

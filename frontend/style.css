@@ -414,6 +414,10 @@ main#inicio{width:100%;max-width:none}
 .preferences-card.is-collapsed>:not(.section-heading){display:none}
 .conversation-toolbar{display:flex;align-items:center;gap:9px;padding:9px 17px;border-bottom:1px solid #ffffff0c;background:#111920}
 .new-conversation-button{min-height:36px;padding:7px 12px;border:1px solid #00e47944;border-radius:9px;background:#103329;color:#b7ffdd;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.delete-conversation-button{min-height:36px;padding:7px 11px;border:1px solid #f8717144;border-radius:9px;background:#291419;color:#fecaca;font:inherit;font-size:12px;font-weight:700;cursor:pointer;transition:background .16s ease,border-color .16s ease}
+.delete-conversation-button:hover{background:#3f1921;border-color:#f8717188}
+.delete-conversation-button--all{border-color:#fbbf2444;background:#282012;color:#fde68a}
+.delete-conversation-button--all:hover{background:#3a2d17;border-color:#fbbf2488}
 .conversation-picker-label{color:#9eaea9;font-size:12px;font-weight:600}
 #conversation-picker{min-width:150px;max-width:250px;height:36px;padding:0 10px;border:1px solid #ffffff16;border-radius:9px;background:#0c141b;color:#e4eee9;font:inherit;font-size:13px}
 .history-persistence{margin-left:auto;color:#91aaa0;font-size:11px}
@@ -423,7 +427,7 @@ main#inicio{width:100%;max-width:none}
   .dashboard-grid#home-view>.left-column.mobile-open{position:fixed;top:68px;bottom:78px;left:10px;z-index:140;display:flex;width:min(88vw,360px);padding:12px;border:1px solid #ffffff1c;border-radius:14px;background:#0c141b;box-shadow:0 18px 50px #000b}
   .dashboard-grid#home-view>.left-column.mobile-open .status-card{display:block}
   .conversation-toolbar{flex-wrap:wrap;gap:7px;padding:8px 0}
-  .new-conversation-button{min-height:38px;font-size:12px}
+  .new-conversation-button,.delete-conversation-button{min-height:38px;font-size:12px}
   #conversation-picker{flex:1;min-width:130px;max-width:none}
   .history-persistence{width:100%;margin:0 2px;font-size:11px}
   .conversation-picker-label{font-size:11px}
