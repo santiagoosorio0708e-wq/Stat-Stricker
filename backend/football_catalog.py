@@ -117,6 +117,10 @@ UCL_API_TEAM_IDS = {
     "Real Madrid": 541, "Roma": 497, "Shakhtar Donetsk": 550, "Slavia Praha": 560,
     "Slovan Bratislava": 663, "Sporting CP": 228, "Stuttgart": 172, "Villarreal": 533,
 }
+UCL_FALLBACK_BADGES = {
+    "Sabah Baku": "https://a.espncdn.com/i/teamlogos/soccer/500/21922.png",
+    "Viking": "https://a.espncdn.com/i/teamlogos/soccer/500/510.png",
+}
 
 
 def ligue1_teams(provider_teams: list[dict] | None = None) -> list[dict[str, str]]:
@@ -139,7 +143,7 @@ def champions_league_teams() -> list[dict[str, str]]:
     for pot, names in UCL_2026_27_POTS.items():
         for index, name in enumerate(names, start=1):
             team_id = UCL_API_TEAM_IDS.get(name)
-            badge = _api_badge(team_id) if team_id else "https://r2.thesportsdb.com/images/media/team/badge/5cw7q91723051971.png"
+            badge = _api_badge(team_id) if team_id else UCL_FALLBACK_BADGES.get(name, "")
             result.append({
                 "id": str(team_id or 950000 + int(pot) * 100 + index),
                 "name": name,

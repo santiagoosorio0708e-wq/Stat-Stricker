@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from urllib.error import URLError
 from urllib.request import Request as UrlRequest, urlopen
@@ -41,16 +42,21 @@ from backend.expert_system import (
     assess_context_quality,
     build_system_prompt,
     build_user_prompt,
+    normalize,
 )
 from backend.football_api import (
     FootballAPIError,
+    FEATURED_COMPETITIONS,
     available_leagues,
     fixture_details,
+    infer_league_id,
     league_top_teams,
     league_teams,
     live_fixtures,
+    resolve_entities_in_text,
     scheduled_fixtures,
     team_fixtures,
+    team_last5_report,
     team_statistics,
 )
 from backend.llm_client import LLMClient, LLMError, OpenAIClient, get_llm_client
@@ -173,6 +179,112 @@ def _llm_error_message(error: LLMError) -> str:
     return "El analista IA no pudo completar la solicitud. Revisa la conexión o la configuración del proveedor."
 
 
+def _local_fallback_answer(
+    analysis: Any,
+    chunks: list[Any],
+    match: ChatFixtureContext | None = None,
+    live_reports: list[dict[str, Any]] | None = None,
+) -> str:
+    """Respuesta estructurada con los últimos 5 partidos si el LLM externo no responde."""
+    if live_reports:
+        sections: list[str] = [
+            "### 📊 Análisis y recomendación (datos verificados de los últimos 5 partidos)",
+            "*(El modelo de lenguaje externo no respondió a tiempo; este resumen se construyó directamente con los datos reales recuperados.)*",
+        ]
+        team_rows = [
+            "| Equipo | Forma (5P) | V-E-D | Goles a favor (Prom.) | Goles en contra (Prom.) | Total goles/P | Ambos marcan | +2.5 goles |",
+            "|---|---|---|---:|---:|---:|---:|---:|",
+        ]
+        for rep in live_reports:
+            avg = rep.get("averages") or {}
+            played = avg.get("played") or 0
+            team_rows.append(
+                f"| **{rep.get('team')}** | {avg.get('form', '—')} | "
+                f"{avg.get('wins', 0)}-{avg.get('draws', 0)}-{avg.get('losses', 0)} | "
+                f"{avg.get('goals_for_total', 0)} ({avg.get('goals_for_avg', 0)}) | "
+                f"{avg.get('goals_against_total', 0)} ({avg.get('goals_against_avg', 0)}) | "
+                f"{avg.get('total_goals_avg', 0)} | "
+                f"{avg.get('btts_count', 0)}/{played} ({avg.get('btts_pct', 0)}%) | "
+                f"{avg.get('over_2_5_count', 0)}/{played} ({avg.get('over_2_5_pct', 0)}%) |"
+            )
+        sections.append("### 📈 Estadísticas de los últimos 5 partidos y promedios\n" + "\n".join(team_rows))
+
+        player_blocks: list[str] = []
+        for rep in live_reports:
+            for p in (rep.get("players") or [])[:2]:
+                p_rows = [
+                    f"**{p['name']} ({rep.get('team')}) — últimos {p['appearances']} partidos:**",
+                    "| Fecha | Partido | Marcador | Goles | Asistencias | Tiros (al arco) |",
+                    "|---|---|---|---:|---:|---:|",
+                ]
+                for pm in p.get("matches") or []:
+                    p_rows.append(
+                        f"| {pm['date']} | {pm['match']} | {pm['score']} | "
+                        f"{pm['goals']} | {pm['assists']} | {pm['shots']} ({pm['shots_on_target']}) |"
+                    )
+                p_rows.append(
+                    f"| **Promedio / partido** | **{p['appearances']} PJ** | — | "
+                    f"**{p['goals_avg']}** | **{p['assists_avg']}** | "
+                    f"**{p['shots_avg']} ({p['shots_on_target_avg']})** |"
+                )
+                player_blocks.append("\n".join(p_rows))
+        if player_blocks:
+            sections.append("### 🏃 Estadísticas de jugador (últimos 5 partidos y promedios)\n" + "\n\n".join(player_blocks))
+
+        avg_btts = round(sum((r.get("averages") or {}).get("btts_pct", 0) for r in live_reports) / len(live_reports))
+        avg_over25 = round(sum((r.get("averages") or {}).get("over_2_5_pct", 0) for r in live_reports) / len(live_reports))
+        avg_goals = round(sum((r.get("averages") or {}).get("total_goals_avg", 0) for r in live_reports) / len(live_reports), 2)
+        recs: list[str] = []
+        if "btts" in analysis.markets or avg_btts >= 60:
+            fair = round(100 / max(1, avg_btts), 2)
+            verdict = "Tendencia favorable" if avg_btts >= 60 else "Precaución / evitar si la cuota es baja"
+            recs.append(f"- **Ambos marcan (BTTS)**: frecuencia reciente promedio de **{avg_btts}%** → cuota mínima justa **{fair}** ({verdict}).")
+        if "over_under" in analysis.markets or avg_over25 >= 60 or avg_goals >= 2.6:
+            fair = round(100 / max(1, avg_over25), 2)
+            verdict = "Tendencia a +2.5 goles" if avg_over25 >= 60 else "Tendencia moderada / valorar -2.5 si la cuota acompaña"
+            recs.append(f"- **Más/Menos 2.5 goles**: promedio conjunto de **{avg_goals} goles/partido** y **{avg_over25}%** con +2.5 → cuota mínima justa +2.5 **{fair}** ({verdict}).")
+        if not recs:
+            best = max(live_reports, key=lambda r: (r.get("averages") or {}).get("wins", 0))
+            b_avg = best.get("averages") or {}
+            win_pct = round(100 * (b_avg.get("wins", 0)) / max(1, b_avg.get("played", 1)))
+            recs.append(
+                f"- **Resultado / Doble oportunidad**: **{best.get('team')}** presenta mejor racha reciente ({b_avg.get('form')}, {win_pct}% victorias); "
+                "considera **doble oportunidad** o **+1.5 goles** para menor varianza (🟡 Riesgo medio)."
+            )
+        sections.append(
+            "### 🎯 Recomendación basada en la muestra\n"
+            + "\n".join(recs)
+            + "\n\n⚠️ *Ninguna apuesta es segura; evalúa cuotas reales antes de entrar y limita el stake al 1-2% del bankroll.*"
+        )
+        return "\n\n".join(sections)
+
+    market_names = {
+        "1x2": "resultado 1X2", "doble_oportunidad": "doble oportunidad",
+        "over_under": "más/menos goles", "btts": "ambos marcan", "handicap": "hándicap",
+        "corners": "córners", "tarjetas": "tarjetas",
+    }
+    markets = [market_names.get(item, item) for item in analysis.markets]
+    if match:
+        context = _fixture_schedule_answer(match)
+    elif chunks:
+        teams = list(dict.fromkeys(
+            f"{chunk.metadata.get('home_team', '')} vs {chunk.metadata.get('away_team', '')}"
+            for chunk in chunks if chunk.metadata.get("home_team") and chunk.metadata.get("away_team")
+        ))
+        context = (
+            f"La base local encontró contexto para **{', '.join(teams[:3])}**."
+            if teams else "Encontré contexto limitado en la base local."
+        )
+    else:
+        context = "No identifiqué un equipo o partido concreto en las ligas conectadas."
+    market_text = f"Mercado detectado: **{', '.join(markets)}**." if markets else ""
+    return (
+        "El proveedor de IA está temporalmente saturado. "
+        f"{context} {market_text} "
+        "Indica los nombres completos de los equipos (por ejemplo *Arsenal vs Chelsea* o *Real Madrid vs Barcelona*) para consultar sus últimos 5 partidos y calcular promedios."
+    )
+
+
 def _generate_with_fallback(request: Request, system_prompt: str, user_prompt: str) -> tuple[str, LLMClient]:
     primary: LLMClient | None = request.app.state.llm
     fallback: LLMClient | None = request.app.state.llm_fallback
@@ -197,7 +309,9 @@ def _generate_with_fallback(request: Request, system_prompt: str, user_prompt: s
 
 def _is_schedule_question(message: str) -> bool:
     text = message.casefold()
-    return bool(re.search(r"\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio|pr[oó]xim[oa]s? partido|siguiente partido|kick.?off|schedule)\b", text))
+    asks_time = bool(re.search(r"\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio|kick.?off|schedule)\b", text))
+    asks_analysis = bool(re.search(r"\b(apuesta|apostar|recomiend|estad[ií]stic|promedio|tabla|goles|btts|ambos|cuota|gana|jugador|analiz)\b", text))
+    return asks_time and not asks_analysis
 
 
 def _fixture_schedule_answer(match: ChatFixtureContext) -> str:
@@ -208,7 +322,9 @@ def _fixture_schedule_answer(match: ChatFixtureContext) -> str:
         if kickoff.tzinfo is None:
             kickoff = kickoff.replace(tzinfo=timezone.utc)
         kickoff = kickoff.astimezone(ZoneInfo("America/Bogota"))
-        date_text, time_text = kickoff.strftime("%d/%m/%Y"), kickoff.strftime("%H:%M")
+        weekdays = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+        date_text = f"{weekdays[kickoff.weekday()]}, {kickoff.strftime('%d/%m/%Y')}"
+        time_text = kickoff.strftime("%H:%M")
     except ValueError:
         date_text, time_text = match.kickoff, ""
     when = f"el {date_text} a las {time_text}" if time_text else f"el {date_text}"
@@ -248,6 +364,7 @@ def health(request: Request) -> dict[str, Any]:
             "error": request.app.state.llm_error,
         },
         "vector_db": {"engine": "chromadb", "documents": store.count()},
+        "history_storage": {"engine": "SQLite", "persistent": True, "scope": "local"},
         "embedding_provider": settings.embedding_provider,
     }
 
@@ -478,9 +595,6 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     """
     store: VectorStore = request.app.state.vector_store
     llm: LLMClient | None = request.app.state.llm
-    if llm is None and request.app.state.llm_fallback is None:
-        raise HTTPException(status_code=503, detail=request.app.state.llm_error or "LLM no configurado.")
-
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=422, detail="El mensaje no puede estar vacío.")
@@ -502,55 +616,155 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             provider="api-football:fixture-context",
         )
 
-    # 1) Hechos de la consulta (entity linking contra el catálogo de partidos)
-    analysis = analyze_query(message, store.list_matches())
+    # 1) Resolver equipos mencionados (de match_context y/o del texto libre)
+    extra_teams: list[dict[str, str]] = []
+    if payload.match_context:
+        comp_id = infer_league_id(payload.match_context.competition)
+        extra_teams = [
+            {"name": payload.match_context.home, "league_id": comp_id or infer_league_id("", payload.match_context.home)},
+            {"name": payload.match_context.away, "league_id": comp_id or infer_league_id("", payload.match_context.away)},
+        ]
+    resolved_teams, resolved_players = resolve_entities_in_text(message, extra_teams=extra_teams)
 
-    # 2) Recuperación semántica
+    # Alcance de la base vectorial: si hay match_context o equipos en vivo fuera de mock_matches,
+    # evitamos mezclar fragmentos de otros partidos no relacionados.
+    known_matches = store.list_matches()
+    if payload.match_context:
+        target_pair = {normalize(payload.match_context.home), normalize(payload.match_context.away)}
+        relevant_matches = [
+            item for item in known_matches
+            if {normalize(item.get("home_team", "")), normalize(item.get("away_team", ""))} == target_pair
+        ]
+    else:
+        relevant_matches = known_matches
+
+    # 2) Hechos de la consulta (Sistema Experto)
+    analysis = analyze_query(message, relevant_matches)
+    if resolved_players:
+        analysis.mentions_player = True
+    if payload.match_context and relevant_matches:
+        analysis.matched_match_ids = list(dict.fromkeys(
+            [item["match_id"] for item in relevant_matches if item.get("match_id")]
+        ))
+        analysis.matched_teams = [payload.match_context.home, payload.match_context.away]
+    elif resolved_teams:
+        for t in resolved_teams:
+            if t["name"] not in analysis.matched_teams:
+                analysis.matched_teams.append(t["name"])
+
+    # 3) Estadísticas reales de los últimos 5 partidos (equipos y, si aplica, jugadores)
+    live_reports: list[dict[str, Any]] = []
+    if resolved_teams:
+        try:
+            season_year = int(payload.match_context.kickoff[:4]) if payload.match_context and payload.match_context.kickoff else datetime.now().year
+        except (TypeError, ValueError):
+            season_year = datetime.now().year
+
+        player_search_text = " ".join([message, *resolved_players]).strip()
+
+        def _fetch_report(team_info: dict[str, str]) -> dict[str, Any] | None:
+            try:
+                return team_last5_report(
+                    team_info["name"],
+                    team_info.get("league_id", ""),
+                    season=season_year,
+                    include_players=analysis.mentions_player,
+                    player_query=player_search_text,
+                    limit=5,
+                )
+            except Exception as exc:
+                logger.info("No se pudo cargar reporte últimos 5 de %s (%s)", team_info.get("name"), type(exc).__name__)
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            for rep in pool.map(_fetch_report, resolved_teams[:2]):
+                if rep:
+                    live_reports.append(rep)
+
+    # 4) Recuperación semántica en ChromaDB (solo si el partido completo coincide con el catálogo local o no hay reporte en vivo)
+    query_norm = normalize(message)
+    resolved_norms = [normalize(t["name"]) for t in resolved_teams]
+
+    def _team_in_resolved(mock_team: str) -> bool:
+        mt = normalize(mock_team)
+        return any(rn == mt or rn in mt or mt in rn for rn in resolved_norms)
+
+    matched_mock_ids = [
+        item["match_id"]
+        for item in relevant_matches
+        if item.get("match_id") in analysis.matched_match_ids
+        and (
+            payload.match_context is not None
+            or "clasico" in query_norm
+            or (_team_in_resolved(item.get("home_team", "")) and _team_in_resolved(item.get("away_team", "")))
+        )
+    ]
+    if not matched_mock_ids and not live_reports:
+        matched_mock_ids = list(analysis.matched_match_ids)
+
     try:
         store.check_compatibility()
-        chunks = store.search(message, top_k=settings.rag_top_k, match_ids=analysis.matched_match_ids or None)
+        should_search_chroma = bool(matched_mock_ids) or not resolved_teams
+        chunks = (
+            store.search(message, top_k=settings.rag_top_k, match_ids=matched_mock_ids or None)
+            if should_search_chroma else []
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    entity_matched = bool(analysis.matched_match_ids)
+    entity_matched = bool(matched_mock_ids)
     if not entity_matched:
-        # Sin equipo reconocido, descartamos fragmentos poco similares.
         chunks = [c for c in chunks if c.distance <= settings.rag_max_distance]
-    context_quality = assess_context_quality(chunks, entity_matched)
+    context_quality = assess_context_quality(chunks, entity_matched, has_live_reports=bool(live_reports))
 
-    # 3) System Prompt dinámico + prompt de usuario con contexto y memoria
+    # 5) System Prompt dinámico + prompt de usuario con datos de últimos 5 partidos, RAG y memoria
     system_prompt, active_rules = build_system_prompt(analysis, context_quality)
+    if live_reports and "ultimos_5_partidos" not in active_rules:
+        active_rules.append("ultimos_5_partidos")
     sources = [c.to_source() for c in chunks]
+    for rep in live_reports:
+        sources.append({
+            "id": f"espn::{normalize(rep['team'])}",
+            "match_id": rep.get("league_id", ""),
+            "match": f"{rep['team']} ({rep.get('source', 'últimos 5 partidos')})",
+            "category": "ultimos_5",
+            "similarity": 1.0,
+        })
     history = database.get_history(payload.session_id, limit=settings.history_turns)
-    user_prompt = build_user_prompt(message, chunks, history, analysis)
+    user_prompt = build_user_prompt(message, chunks, history, analysis, live_reports=live_reports)
     if payload.match_context:
         match = payload.match_context
         kickoff = match.kickoff or "fecha y hora no disponibles"
         system_prompt += (
             "\n\n## Partido validado por el calendario en vivo\n"
-            f"El partido disponible es {match.home} vs {match.away}, de {match.competition}. "
-            f"Su inicio registrado es {kickoff} y su estado es {match.status}. "
-            "Puedes responder sobre este encuentro usando estos datos. Si la consulta pide análisis deportivo, "
-            "aclara que no se proporcionaron estadísticas adicionales y no las inventes."
+            f"El partido seleccionado es {match.home} vs {match.away}, de {match.competition}. "
+            f"Su inicio registrado es {kickoff} y su estado es {match.status}."
         )
         user_prompt += (
             "\n\n<partido_consultado>\n"
             f"ID: {match.id}\nCompetición: {match.competition}\n"
             f"Partido: {match.home} vs {match.away}\n"
             f"Fecha y hora del inicio (ISO 8601): {kickoff}\nEstado: {match.status}\n"
-            "Usa estos datos exactos para responder preguntas sobre cuándo y dónde aparece este partido. "
-            "No inventes otros horarios ni fechas.\n</partido_consultado>"
+            "Usa estos datos exactos para responder preguntas sobre cuándo y dónde aparece este partido.\n"
+            "</partido_consultado>"
         )
-    logger.info("Reglas activas: %s | fragmentos: %d", active_rules, len(chunks))
+    logger.info("Reglas activas: %s | fragmentos: %d | reportes_5p: %d", active_rules, len(chunks), len(live_reports))
 
-    # 4) Llamada al LLM
-    answer, used_llm = _generate_with_fallback(request, system_prompt, user_prompt)
+    # 6) Llamada al LLM (con respaldo local estructurado si todos los modelos fallan)
+    try:
+        answer, used_llm = _generate_with_fallback(request, system_prompt, user_prompt)
+        provider = f"{used_llm.provider}:{used_llm.model}"
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        answer = _local_fallback_answer(analysis, chunks, payload.match_context, live_reports=live_reports)
+        provider = "local-fallback"
     if not answer:
         answer = "No he podido generar un análisis en este momento. Inténtalo de nuevo."
 
-    # 5) Persistencia
+    # 7) Persistencia
     row_id = database.save_interaction(
-        payload.session_id, message, answer, active_rules, sources, f"{used_llm.provider}:{used_llm.model}"
+        payload.session_id, message, answer, active_rules, sources, provider
     )
 
     return ChatResponse(
@@ -560,7 +774,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         context_quality=context_quality,
         sources=sources,
         analysis=analysis.to_dict(),
-        provider=f"{used_llm.provider}:{used_llm.model}",
+        provider=provider,
     )
 
 

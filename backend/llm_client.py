@@ -14,7 +14,6 @@ Las API keys se leen desde variables de entorno (ver config.py).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import time
 
 from backend.config import Settings
 
@@ -36,31 +35,49 @@ class GeminiClient(LLMClient):
     """Cliente para Google Gemini usando el SDK oficial `google-genai`."""
 
     provider = "gemini"
+    _FALLBACK_MODELS = ("gemini-3.5-flash-lite", "gemini-4-hydrogen", "gemini-3.1-flash-lite")
 
     def __init__(self, api_key: str, model: str, max_output_tokens: int) -> None:
         from google import genai
+        from google.genai import types
 
-        self._client = genai.Client(api_key=api_key)
+        http_options = types.HttpOptions(
+            timeout=20000,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        )
+        self._client = genai.Client(api_key=api_key, http_options=http_options)
         self.model = model
         self._max_tokens = max_output_tokens
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        for attempt in range(3):
+        candidates = [self.model] + [m for m in self._FALLBACK_MODELS if m != self.model]
+        last_exc: Exception | None = None
+        for candidate in candidates:
             try:
                 interaction = self._client.interactions.create(
-                    model=self.model,
+                    model=candidate,
                     system_instruction=system_prompt,
                     input=user_prompt,
                     generation_config={"max_output_tokens": self._max_tokens},
                     store=False,
                 )
+                # Promovemos el modelo que respondió para evitar reintentos en turnos siguientes.
+                self.model = candidate
                 return (interaction.output_text or "").strip()
             except Exception as exc:  # errores de red, cuota, clave inválida...
+                last_exc = exc
                 detail = str(exc).casefold()
-                temporary = any(token in detail for token in ("503", "429", "500", "502", "504", "service_unavailable", "high demand"))
-                if not temporary or attempt == 2:
-                    raise LLMError(f"Error al llamar a Gemini: {exc}") from exc
-                time.sleep(1.5 * (attempt + 1))
+                temporary = any(
+                    token in detail
+                    for token in (
+                        "503", "429", "500", "502", "504",
+                        "service_unavailable", "high demand", "rate limit",
+                        "timed out", "timeout", "unavailable",
+                    )
+                )
+                if not temporary:
+                    raise LLMError(f"Error al llamar a Gemini ({candidate}): {exc}") from exc
+        raise LLMError(f"Error al llamar a Gemini: {last_exc}") from last_exc
 
 
 class OpenAIClient(LLMClient):
@@ -71,7 +88,7 @@ class OpenAIClient(LLMClient):
     def __init__(self, api_key: str, model: str, max_output_tokens: int) -> None:
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, timeout=20.0, max_retries=0)
         self.model = model
         self._max_tokens = max_output_tokens
 

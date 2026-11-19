@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from threading import Lock
 from typing import Any
@@ -34,6 +35,18 @@ FEATURED_COMPETITIONS = {
 }
 THESPORTSDB_LEAGUES = {"39": "4328", "140": "4335", "135": "4332", "78": "4331", "61": "4334", "71": "4351", "2": "4480", "3": "4481", "13": "4501", "253": "4346"}
 THESPORTSDB_TO_API_LEAGUE = {value: key for key, value in THESPORTSDB_LEAGUES.items()}
+ESPN_SOCCER_LEAGUES = {
+    "39": "eng.1", "140": "esp.1", "78": "ger.1", "135": "ita.1",
+    "61": "fra.1", "2": "uefa.champions", "3": "uefa.europa",
+    "13": "conmebol.libertadores", "71": "bra.1", "253": "usa.1", "143": "esp.copa_del_rey",
+}
+ESPN_LOGO_LOOKUP_LEAGUES = {
+    "135": ["ita.2"],
+    "3": ["eng.1", "ita.1", "esp.1", "ger.1", "ned.1", "por.1", "tur.1", "sco.1"],
+    "13": ["arg.1", "bra.1", "chi.1", "ecu.1"],
+    "71": ["bra.2"],
+    "253": ["usa.1"],
+}
 THESPORTSDB_LEAGUE_NAMES = {
     "39": "English_Premier_League",
     "140": "Spanish_La_Liga",
@@ -419,6 +432,7 @@ def _thesportsdb_league_teams(league_id: str) -> list[dict[str, Any]]:
         teams = sorted(combined.values(), key=lambda item: item["name"].casefold())
     if not teams:
         teams = _static_league_teams(league_id)
+    teams = _with_espn_team_badges(league_id, teams)
     with _cache_lock:
         _cache[cache_key] = (time.monotonic() + 24 * 60 * 60, teams)
     return teams
@@ -589,6 +603,274 @@ def team_fixtures(team_id: int, season: int, limit: int = 10) -> list[dict[str, 
     return fixtures or _thesportsdb_team_fixtures(str(team_id))
 
 
+def recent_team_player_events(
+    team_name: str, competition_id: str, season: int, limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Return recent completed matches and verified goal/assist events from ESPN summaries."""
+    league = ESPN_SOCCER_LEAGUES.get(str(competition_id))
+    if not league or not team_name.strip():
+        return []
+    team_id = _espn_team_id(league, team_name)
+    if not team_id:
+        return []
+    cache_key = f"espn:team-history:{league}:{team_id}:{season}:{limit}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    schedule_url = (
+        "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+        f"{league}/teams/{team_id}/schedule?season={season}"
+    )
+    try:
+        schedule = _espn_json(schedule_url)
+    except FootballAPIError:
+        return []
+    played = []
+    for event in schedule.get("events") or []:
+        competitions = event.get("competitions") or []
+        competition = competitions[0] if competitions else {}
+        status = competition.get("status") or {}
+        if not (status.get("type") or {}).get("completed"):
+            continue
+        teams = competition.get("competitors") or []
+        home = next((item for item in teams if item.get("homeAway") == "home"), None)
+        away = next((item for item in teams if item.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+        played.append({
+            "id": str(event.get("id") or ""),
+            "date": str(event.get("date") or competition.get("date") or ""),
+            "home": (home.get("team") or {}).get("displayName") or "",
+            "away": (away.get("team") or {}).get("displayName") or "",
+            "home_score": _espn_score(home.get("score")),
+            "away_score": _espn_score(away.get("score")),
+            "status": (status.get("type") or {}).get("detail") or "Final",
+        })
+    played.sort(key=lambda item: item["date"], reverse=True)
+    played = played[:max(1, min(limit, 8))]
+
+    def load_events(match: dict[str, Any]) -> tuple[str, list[dict[str, str]], list[dict[str, Any]]]:
+        try:
+            summary = _espn_json(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+                f"{league}/summary?event={match['id']}"
+            )
+        except FootballAPIError:
+            return match["id"], [], []
+        goals = []
+        for event in summary.get("keyEvents") or []:
+            if not event.get("scoringPlay"):
+                continue
+            participants = event.get("participants") or []
+            scorer = ""
+            if participants:
+                scorer = ((participants[0].get("athlete") or {}).get("displayName") or "")
+            text = str(event.get("text") or "")
+            assist_match = re.search(r"Assisted by (.+?)(?:\s+with\s+|\s+from\s+|\s+after\s+|\.|$)", text, re.IGNORECASE)
+            assist = assist_match.group(1).strip(" ,.") if assist_match else ""
+            goals.append({
+                "minute": (event.get("clock") or {}).get("displayValue") or "",
+                "scorer": scorer,
+                "assist": assist,
+                "description": text,
+            })
+        players = []
+        for roster in summary.get("rosters") or []:
+            for player in roster.get("roster") or []:
+                athlete = player.get("athlete") or {}
+                name = athlete.get("displayName") or athlete.get("fullName") or ""
+                if not name:
+                    continue
+                stats = {
+                    str(item.get("name") or ""): _espn_score(item.get("value"))
+                    for item in player.get("stats") or []
+                }
+                players.append({
+                    "name": name,
+                    "team": (roster.get("team") or {}).get("displayName") or "",
+                    "started": bool(player.get("starter")),
+                    "goals": stats.get("totalGoals"),
+                    "assists": stats.get("goalAssists"),
+                    "shots": stats.get("totalShots"),
+                    "shots_on_target": stats.get("shotsOnTarget"),
+                })
+        return match["id"], goals, players
+
+    goals_by_match: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(load_events, match) for match in played]
+        for future in as_completed(futures):
+            try:
+                fixture_id, goals, players = future.result()
+                goals_by_match[fixture_id] = {"goals": goals, "players": players}
+            except Exception as exc:
+                logger.debug("No se pudo leer un resumen ESPN (%s)", type(exc).__name__)
+    for match in played:
+        details = goals_by_match.get(match["id"], {})
+        match["goals"] = details.get("goals", [])
+        match["players"] = details.get("players", [])
+        match["source"] = "ESPN match summary"
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 30 * 60, played)
+    return played
+
+
+def _espn_team_id(league: str, team_name: str) -> str:
+    teams = _espn_team_catalog(league)
+    if not teams:
+        return ""
+    wanted = _normalized_team_name(team_name)
+    aliases = {
+        "real madrid": {"real madrid", "madrid"},
+        "barcelona": {"barcelona", "fc barcelona"},
+        "atletico madrid": {"atletico madrid", "atletico de madrid", "atletico"},
+        "inter milan": {"inter milan", "inter", "internazionale"},
+        "ac milan": {"ac milan", "milan"},
+        "bayern munich": {"bayern munich", "fc bayern munich", "bayern munchen", "bayern"},
+        "borussia dortmund": {"borussia dortmund", "dortmund"},
+        "paris saint germain": {"paris saint germain", "psg"},
+        "tottenham hotspur": {"tottenham hotspur", "tottenham", "spurs"},
+        "manchester united": {"manchester united", "man utd"},
+        "manchester city": {"manchester city", "man city"},
+        "athletic club": {"athletic club", "athletic bilbao"},
+    }
+    accepted = aliases.get(wanted, {wanted})
+    for team in teams:
+        names = {
+            _normalized_team_name(str(team.get(key) or ""))
+            for key in ("displayName", "name", "shortDisplayName", "location")
+        }
+        if names & accepted:
+            return str(team.get("id") or "")
+    for team in teams:
+        names = [
+            _normalized_team_name(str(team.get(key) or ""))
+            for key in ("displayName", "name", "shortDisplayName")
+        ]
+        if any(wanted in n or n in wanted for n in names if n and len(n) >= 4):
+            return str(team.get("id") or "")
+    return ""
+
+
+def _espn_team_catalog(league: str) -> list[dict[str, Any]]:
+    cache_key = f"espn:teams:{league}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            teams = cached[1]
+        else:
+            teams = None
+    if teams is None:
+        try:
+            payload = _espn_json(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+                f"{league}/teams?limit=100"
+            )
+        except FootballAPIError:
+            return []
+        teams = [
+            row.get("team") or {}
+            for sport in payload.get("sports") or []
+            for row in ((sport.get("leagues") or [{}])[0].get("teams") or [])
+        ]
+        with _cache_lock:
+            _cache[cache_key] = (time.monotonic() + 6 * 60 * 60, teams)
+    return teams
+
+
+def _with_espn_team_badges(league_id: str, teams: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill badge gaps in team catalogs without changing their comparison IDs."""
+    league = ESPN_SOCCER_LEAGUES.get(str(league_id))
+    if not league or not teams or all(team.get("badge") for team in teams):
+        return teams
+    espn_teams = _espn_team_catalog(league)
+    if not espn_teams:
+        return teams
+
+    def names(team: dict[str, Any]) -> set[str]:
+        return {
+            _normalized_team_name(str(team.get(key) or ""))
+            for key in ("name", "displayName", "shortDisplayName", "location")
+            if team.get(key)
+        }
+
+    aliases = {
+        "atletico mineiro": {"atletico mineiro", "atletico mg"},
+        "athletico paranaense": {"athletico paranaense", "athletico pr"},
+        "red bull bragantino": {"red bull bragantino", "bragantino"},
+        "inter miami": {"inter miami", "inter miami cf"},
+        "new york red bulls": {"new york red bulls", "new york rb", "red bull new york"},
+        "los angeles fc": {"los angeles fc", "la fc", "lafc"},
+        "sao paulo": {"sao paulo", "sao paulo fc"},
+        "ldu quito": {"ldu quito", "liga de quito"},
+    }
+    candidates = list(espn_teams)
+    extra_leagues = ESPN_LOGO_LOOKUP_LEAGUES.get(str(league_id), [])
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_espn_team_catalog, extra) for extra in extra_leagues if extra != league]
+        for future in as_completed(futures):
+            try:
+                candidates.extend(future.result())
+            except Exception:
+                continue
+    for team in teams:
+        if team.get("badge"):
+            continue
+        wanted = names(team)
+        if not wanted:
+            continue
+        expanded = set(wanted)
+        for name in wanted:
+            expanded.update(aliases.get(name, set()))
+        best = None
+        for candidate in candidates:
+            candidate_names = names(candidate)
+            if expanded & candidate_names or any(
+                min(len(left), len(right)) >= 7 and (left in right or right in left)
+                for left in expanded for right in candidate_names
+            ):
+                best = candidate
+                break
+        if best:
+            logos = best.get("logos") or []
+            team["badge"] = best.get("logo") or (logos[0].get("href") if logos else "") or ""
+    fallback_api_teams = {
+        "135": {"pisa": 801, "cremonese": 520, "verona": 504},
+        "71": {"sport recife": 123},
+    }
+    for team in teams:
+        api_team_id = fallback_api_teams.get(str(league_id), {}).get(_normalized_team_name(str(team.get("name") or "")))
+        if api_team_id:
+            if str(team.get("id", "")).isdigit() and int(team["id"]) >= 900000:
+                team["id"] = str(api_team_id)
+            if not team.get("badge"):
+                team["badge"] = _api_badge(api_team_id)
+    return teams
+
+
+def _espn_json(url: str) -> dict[str, Any]:
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "StatStriker/1.0"})
+    try:
+        with urlopen(request, timeout=4) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise FootballAPIError("No se pudo consultar el historial de partidos.", 502) from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def _espn_score(value: Any) -> int | None:
+    if isinstance(value, dict):
+        value = value.get("displayValue", value.get("value"))
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def team_statistics(league_id: int, season: int, team_id: int, team_name: str = "") -> dict[str, Any]:
     """Return a compact set of current team stats for side-by-side comparison."""
     if str(league_id) == "2":
@@ -616,10 +898,10 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
             ttl=6 * 60 * 60,
         )
     except FootballAPIError:
-        return _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
+        return _espn_team_recent_statistics(str(league_id), season, team_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
     item = payload.get("response") or {}
     if not isinstance(item, dict) or not item.get("team"):
-        return _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
+        return _espn_team_recent_statistics(str(league_id), season, team_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
     fixtures, goals = item.get("fixtures") or {}, item.get("goals") or {}
     for_goals = goals.get("for") or {}
     against_goals = goals.get("against") or {}
@@ -639,6 +921,93 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
         "league": item.get("league") or {},
         "source": "API-Football",
     }
+
+
+def _espn_team_recent_statistics(league_id: str, season: int, team_name: str) -> dict[str, Any] | None:
+    """Use an honest last-five-match comparison if the season-stat plan is unavailable."""
+    league = ESPN_SOCCER_LEAGUES.get(str(league_id))
+    if not league or not team_name.strip():
+        return None
+    espn_team_id = _espn_team_id(league, team_name)
+    if not espn_team_id:
+        for alternate_league in ESPN_LOGO_LOOKUP_LEAGUES.get(str(league_id), []):
+            espn_team_id = _espn_team_id(alternate_league, team_name)
+            if espn_team_id:
+                league = alternate_league
+                break
+    if not espn_team_id:
+        return None
+    cache_key = f"espn:team-recent-stats:{league}:{espn_team_id}:{season}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+    try:
+        schedule = _espn_json(
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+            f"{league}/teams/{espn_team_id}/schedule?season={season}"
+        )
+    except FootballAPIError:
+        return None
+
+    results = []
+    for event in schedule.get("events") or []:
+        competition = next(iter(event.get("competitions") or []), {})
+        status = (competition.get("status") or {}).get("type") or {}
+        if not status.get("completed"):
+            continue
+        competitors = competition.get("competitors") or []
+        home = next((item for item in competitors if item.get("homeAway") == "home"), None)
+        away = next((item for item in competitors if item.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+        home_score, away_score = _espn_score(home.get("score")), _espn_score(away.get("score"))
+        if home_score is None or away_score is None:
+            continue
+        home_team, away_team = home.get("team") or {}, away.get("team") or {}
+        is_home = str(home_team.get("id") or "") == espn_team_id
+        if not is_home and str(away_team.get("id") or "") != espn_team_id:
+            continue
+        scored, conceded = (home_score, away_score) if is_home else (away_score, home_score)
+        result = "W" if scored > conceded else "D" if scored == conceded else "L"
+        results.append({"date": str(event.get("date") or ""), "scored": scored, "conceded": conceded, "result": result})
+    results.sort(key=lambda row: row["date"], reverse=True)
+    sample = results[:5]
+    if not sample:
+        return None
+    played = len(sample)
+    goals_for = sum(row["scored"] for row in sample)
+    goals_against = sum(row["conceded"] for row in sample)
+    wins = sum(row["result"] == "W" for row in sample)
+    draws = sum(row["result"] == "D" for row in sample)
+    losses = sum(row["result"] == "L" for row in sample)
+    catalog_team = next(
+        (team for team in _espn_team_catalog(league) if str(team.get("id") or "") == espn_team_id),
+        {},
+    )
+    logos = catalog_team.get("logos") or []
+    response = {
+        "team": {
+            "id": espn_team_id,
+            "name": catalog_team.get("displayName") or team_name,
+            "logo": catalog_team.get("logo") or (logos[0].get("href") if logos else "") or "",
+        },
+        "form": "".join(row["result"] for row in reversed(sample)),
+        "played": played, "wins": wins, "draws": draws, "loses": losses,
+        "goals_for": goals_for, "goals_against": goals_against,
+        "goals_for_avg": round(goals_for / played, 2),
+        "goals_against_avg": round(goals_against / played, 2),
+        "rank": None, "points": None, "sample_points": wins * 3 + draws,
+        "goal_difference": goals_for - goals_against,
+        "clean_sheets": sum(row["conceded"] == 0 for row in sample),
+        "failed_to_score": sum(row["scored"] == 0 for row in sample),
+        "league": {"id": league_id},
+        "source": f"ESPN · últimos {played} partidos",
+    }
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 30 * 60, response)
+    return response
 
 
 def _thesportsdb_team_statistics(league_id: str, team_id: str, team_name: str = "") -> dict[str, Any]:
@@ -718,7 +1087,8 @@ def _thesportsdb_team_fixtures(team_id: str) -> list[dict[str, Any]]:
         if not home or not away or not kickoff:
             continue
         if isinstance(kickoff, str) and len(kickoff) == 19 and kickoff[10] == "T":
-            kickoff += "-05:00"
+            # TheSportsDB strTimestamp is UTC; adding Bogota's offset here shifted kickoff 5 hours late.
+            kickoff += "+00:00"
         fixtures.append({
             "id": str(event.get("idEvent") or ""),
             "home": home,
@@ -814,7 +1184,8 @@ def _thesportsdb_day_fixtures(day: date, preferred_leagues: list[str] | None = N
             if not home or not away or not kickoff:
                 continue
             if isinstance(kickoff, str) and len(kickoff) == 19 and kickoff[10] == "T":
-                kickoff += "-05:00"
+                # Normalize the UTC timestamp here, then let the frontend display Bogota time.
+                kickoff += "+00:00"
             fixtures.append({
                 "id": str(event.get("idEvent") or ""),
                 "home": home,
@@ -879,3 +1250,590 @@ def fixture_details(fixture_id: int) -> dict[str, Any]:
     match["statistics"] = statistics
     match["events"] = events
     return match
+
+
+# ====================================================================== #
+# Resolución de equipos/jugadores y reporte de últimos 5 partidos (Chat)
+# ====================================================================== #
+_TEAM_NICKNAMES: dict[str, tuple[str, str]] = {
+    "city": ("Manchester City", "39"),
+    "man city": ("Manchester City", "39"),
+    "manchester city": ("Manchester City", "39"),
+    "citizens": ("Manchester City", "39"),
+    "liverpool": ("Liverpool", "39"),
+    "reds": ("Liverpool", "39"),
+    "united": ("Manchester United", "39"),
+    "man utd": ("Manchester United", "39"),
+    "manchester united": ("Manchester United", "39"),
+    "arsenal": ("Arsenal", "39"),
+    "gunners": ("Arsenal", "39"),
+    "chelsea": ("Chelsea", "39"),
+    "spurs": ("Tottenham Hotspur", "39"),
+    "tottenham": ("Tottenham Hotspur", "39"),
+    "newcastle": ("Newcastle United", "39"),
+    "aston villa": ("Aston Villa", "39"),
+    "real madrid": ("Real Madrid", "140"),
+    "madrid": ("Real Madrid", "140"),
+    "merengues": ("Real Madrid", "140"),
+    "barcelona": ("Barcelona", "140"),
+    "fc barcelona": ("Barcelona", "140"),
+    "barca": ("Barcelona", "140"),
+    "cules": ("Barcelona", "140"),
+    "atletico": ("Atlético Madrid", "140"),
+    "atleti": ("Atlético Madrid", "140"),
+    "atletico madrid": ("Atlético Madrid", "140"),
+    "atletico de madrid": ("Atlético Madrid", "140"),
+    "sevilla": ("Sevilla", "140"),
+    "valencia": ("Valencia", "140"),
+    "betis": ("Real Betis", "140"),
+    "real betis": ("Real Betis", "140"),
+    "villarreal": ("Villarreal", "140"),
+    "athletic": ("Athletic Club", "140"),
+    "athletic bilbao": ("Athletic Club", "140"),
+    "bayern": ("Bayern Munich", "78"),
+    "bayern munich": ("Bayern Munich", "78"),
+    "dortmund": ("Borussia Dortmund", "78"),
+    "borussia dortmund": ("Borussia Dortmund", "78"),
+    "leverkusen": ("Bayer Leverkusen", "78"),
+    "bayer leverkusen": ("Bayer Leverkusen", "78"),
+    "leipzig": ("RB Leipzig", "78"),
+    "inter": ("Inter Milan", "135"),
+    "inter milan": ("Inter Milan", "135"),
+    "milan": ("AC Milan", "135"),
+    "ac milan": ("AC Milan", "135"),
+    "juventus": ("Juventus", "135"),
+    "juve": ("Juventus", "135"),
+    "napoli": ("Napoli", "135"),
+    "roma": ("Roma", "135"),
+    "atalanta": ("Atalanta", "135"),
+    "psg": ("Paris Saint-Germain", "61"),
+    "paris saint germain": ("Paris Saint-Germain", "61"),
+    "marsella": ("Marseille", "61"),
+    "marseille": ("Marseille", "61"),
+    "monaco": ("Monaco", "61"),
+    "lyon": ("Lyon", "61"),
+    "flamengo": ("Flamengo", "71"),
+    "palmeiras": ("Palmeiras", "71"),
+    "boca": ("Boca Juniors", "13"),
+    "boca juniors": ("Boca Juniors", "13"),
+    "river": ("River Plate", "13"),
+    "river plate": ("River Plate", "13"),
+    "inter miami": ("Inter Miami", "253"),
+}
+
+_STAR_PLAYER_TEAMS: dict[str, tuple[str, str]] = {
+    "mbappe": ("Real Madrid", "140"),
+    "kylian": ("Real Madrid", "140"),
+    "vinicius": ("Real Madrid", "140"),
+    "vini": ("Real Madrid", "140"),
+    "bellingham": ("Real Madrid", "140"),
+    "rodrygo": ("Real Madrid", "140"),
+    "valverde": ("Real Madrid", "140"),
+    "yamal": ("Barcelona", "140"),
+    "lamine": ("Barcelona", "140"),
+    "lewandowski": ("Barcelona", "140"),
+    "raphinha": ("Barcelona", "140"),
+    "pedri": ("Barcelona", "140"),
+    "griezmann": ("Atlético Madrid", "140"),
+    "julian alvarez": ("Atlético Madrid", "140"),
+    "haaland": ("Manchester City", "39"),
+    "foden": ("Manchester City", "39"),
+    "salah": ("Liverpool", "39"),
+    "palmer": ("Chelsea", "39"),
+    "cole palmer": ("Chelsea", "39"),
+    "saka": ("Arsenal", "39"),
+    "gyokeres": ("Arsenal", "39"),
+    "kane": ("Bayern Munich", "78"),
+    "harry kane": ("Bayern Munich", "78"),
+    "musiala": ("Bayern Munich", "78"),
+    "lautaro": ("Inter Milan", "135"),
+    "dembele": ("Paris Saint-Germain", "61"),
+    "messi": ("Inter Miami", "253"),
+}
+
+
+def _plain_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    plain = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", plain).strip()
+
+
+def _club_index() -> dict[str, tuple[str, str]]:
+    """Mapa normalizado alias -> (Nombre canonico, league_id)."""
+    index: dict[str, tuple[str, str]] = {}
+    # Orden de prioridad: ligas domesticas primero, copas continentales despues.
+    for league_id in ("39", "140", "78", "135", "61", "71", "253", "13", "2", "3"):
+        for club in FALLBACK_CLUBS.get(league_id, []):
+            index.setdefault(_plain_text(club), (club, league_id))
+    index.update(_TEAM_NICKNAMES)
+    return index
+
+
+def infer_league_id(competition_name: str, team_name: str = "") -> str:
+    comp = _plain_text(competition_name)
+    for league_id, label in FEATURED_COMPETITIONS.items():
+        if _plain_text(label) in comp or comp in _plain_text(label):
+            if league_id in ESPN_SOCCER_LEAGUES:
+                return league_id
+    if team_name:
+        found = _club_index().get(_plain_text(team_name))
+        if found:
+            return found[1]
+    return ""
+
+
+_PLAYER_QUERY_STOPWORDS = {
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "al", "en", "con", "para", "por",
+    "que", "si", "como", "cual", "quien", "cuanto", "cuantos", "sobre", "entre", "contra", "vs", "y", "o",
+    "partido", "partidos", "equipo", "equipos", "jugador", "jugadores", "futbol", "liga", "jornada",
+    "apuesta", "apuestas", "apostar", "cuota", "cuotas", "buena", "mejor", "menor", "objetiva", "valor",
+    "arco", "puerta", "gol", "goles", "tiro", "tiros", "remate", "remates", "disparo", "disparos",
+    "asistencia", "asistencias", "estadistica", "estadisticas", "promedio", "promedios", "tabla",
+    "ultimos", "ultima", "ultimo", "recientes", "reciente", "proximo", "proxima", "hoy", "ayer", "manana",
+    "crees", "dime", "quiero", "necesito", "recomienda", "recomiendas", "recomiende", "analiza", "vale",
+    "pena", "fijarse", "hace", "dispara", "remata", "tira", "anota", "marca", "mete", "asiste", "juega",
+    "mas", "menos", "over", "under", "btts", "ambos", "marcan", "gana", "ganar", "empate", "victoria",
+}
+
+_GENERIC_NAME_TOKENS = {
+    "jose", "juan", "luis", "carlos", "david", "daniel", "lucas", "marco", "pedro", "pablo",
+    "diego", "mateo", "junior", "silva", "santos", "costa", "garcia", "lopez", "martinez",
+}
+
+_ESPN_SLUG_TO_LEAGUE_ID = {v: k for k, v in ESPN_SOCCER_LEAGUES.items()}
+
+
+def _extract_player_candidates(message: str, known_team_names: set[str]) -> list[str]:
+    """Extrae posibles nombres de jugadores de consultas en texto libre."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(raw: str) -> None:
+        cleaned = _plain_text(raw)
+        if not cleaned or cleaned in seen or cleaned in known_team_names:
+            return
+        tokens = [t for t in cleaned.split() if len(t) >= 3 and t not in _PLAYER_QUERY_STOPWORDS]
+        if not tokens or len(tokens) > 3:
+            return
+        joined = " ".join(tokens)
+        if joined in seen or joined in known_team_names:
+            return
+        seen.add(joined)
+        candidates.append(joined)
+
+    # 1) Patrones contextuales (funcionan incluso todo en minúsculas)
+    patterns = (
+        r"(?:que|si|para|sobre|de|a)\s+([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})\s+(?:dispar\w*|remat\w*|tir\w*|anot\w*|marc\w*|met\w*|asist\w*|jueg\w*|en\s+los)",
+        r"(?:tiros?(?:\s+al\s+arco|\s+a\s+puerta)?|remates?|disparos?|goles?|gol|asistencias?|estad[ií]sticas?|promedios?|datos?)\s+(?:de|del|para)\s+([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})",
+        r"(?:anota|anotar[aá]|marca|marcar[aá]|dispara|remata|jugador)\s+(?:de\s+)?([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})",
+    )
+    lowered = message.casefold()
+    for pat in patterns:
+        for m in re.finditer(pat, lowered):
+            add_candidate(m.group(1))
+
+    # 2) Nombres propios con mayúscula (p. ej. "Ollie Watkins", "Wirtz")
+    for m in re.finditer(r"\b([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}(?:\s+[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}){0,2})\b", message):
+        add_candidate(m.group(1))
+
+    return candidates[:4]
+
+
+def _search_player_club(player_query: str) -> dict[str, str] | None:
+    """Resuelve dinámicamente club y liga de cualquier jugador vía ESPN / TheSportsDB."""
+    norm = _plain_text(player_query)
+    if not norm:
+        return None
+    if norm in _STAR_PLAYER_TEAMS:
+        team, lid = _STAR_PLAYER_TEAMS[norm]
+        return {"player": player_query.title(), "team": team, "league_id": lid}
+
+    cache_key = f"player-club:{norm}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    club_idx = _club_index()
+    espn_athlete_id = ""
+    espn_display = ""
+    result: dict[str, str] | None = None
+
+    # 1) ESPN Search
+    try:
+        u1 = "https://site.web.api.espn.com/apis/common/v3/search?" + urlencode(
+            {"query": player_query, "type": "player", "sport": "soccer", "limit": 5}
+        )
+        data = _espn_json(u1)
+        for item in data.get("items") or []:
+            dname = str(item.get("displayName") or "").strip()
+            if not dname:
+                continue
+            dnorm = _plain_text(dname)
+            if norm not in dnorm and not all(tok in dnorm for tok in norm.split()):
+                continue
+            slug = str(item.get("league") or "")
+            lid = _ESPN_SLUG_TO_LEAGUE_ID.get(slug, "")
+            teams = [(tr.get("core") or {}).get("displayName") for tr in (item.get("teamRelationships") or [])]
+            team_name = next((str(t) for t in teams if t), "")
+            if lid and team_name:
+                result = {"player": dname, "team": team_name, "league_id": lid}
+                break
+            if not espn_athlete_id and item.get("id"):
+                espn_athlete_id = str(item["id"])
+                espn_display = dname
+    except FootballAPIError:
+        pass
+
+    # 2) TheSportsDB Search (resuelve club actual cuando ESPN solo devuelve selección nacional)
+    if result is None:
+        try:
+            u2 = "https://www.thesportsdb.com/api/v1/json/123/searchplayers.php?" + urlencode({"p": player_query})
+            req = Request(u2, headers={"Accept": "application/json", "User-Agent": "StatStriker/1.0"})
+            with urlopen(req, timeout=6) as resp:
+                tsdb = json.loads(resp.read().decode("utf-8"))
+            for p in tsdb.get("player") or []:
+                if p.get("strSport") != "Soccer":
+                    continue
+                pname = str(p.get("strPlayer") or "").strip()
+                tname = str(p.get("strTeam") or "").strip()
+                if not pname or not tname or tname.startswith("_Retired"):
+                    continue
+                pnorm = _plain_text(pname)
+                if norm not in pnorm and not all(tok in pnorm for tok in norm.split()):
+                    continue
+                mapped = club_idx.get(_plain_text(tname))
+                if mapped:
+                    result = {"player": pname, "team": mapped[0], "league_id": mapped[1]}
+                    break
+        except Exception:
+            pass
+
+    # 3) ESPN Athlete overview fallback (p. ej. "Pedri")
+    if result is None and espn_athlete_id:
+        try:
+            info = _espn_json(
+                f"https://site.web.api.espn.com/apis/common/v3/sports/soccer/eng.1/athletes/{espn_athlete_id}"
+            )
+            tname = str(((info.get("athlete") or {}).get("team") or {}).get("displayName") or "").strip()
+            if tname:
+                mapped = club_idx.get(_plain_text(tname))
+                if mapped:
+                    result = {"player": espn_display or player_query.title(), "team": mapped[0], "league_id": mapped[1]}
+                else:
+                    result = {"player": espn_display or player_query.title(), "team": tname, "league_id": "39"}
+        except FootballAPIError:
+            pass
+
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 6 * 60 * 60, result)
+    return result
+
+
+def resolve_teams_in_text(
+    text: str,
+    extra_teams: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """Detecta equipos (y jugadores conocidos o buscados) mencionados en la consulta."""
+    resolved, _ = resolve_entities_in_text(text, extra_teams=extra_teams)
+    return resolved
+
+
+def resolve_entities_in_text(
+    text: str,
+    extra_teams: list[dict[str, str]] | None = None,
+    allow_player_lookup: bool = True,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Detecta equipos y nombres de jugadores (estrellas + búsqueda dinámica)."""
+    resolved: list[dict[str, str]] = []
+    player_names: list[str] = []
+    seen_names: set[str] = set()
+
+    def add_team(name: str, league_id: str) -> None:
+        key = _plain_text(name)
+        if not key or key in seen_names:
+            return
+        seen_names.add(key)
+        resolved.append({"name": name, "league_id": league_id})
+
+    for item in extra_teams or []:
+        name = str(item.get("name") or "").strip()
+        if name:
+            add_team(name, str(item.get("league_id") or infer_league_id("", name) or "39"))
+
+    query = _plain_text(text)
+    if not query:
+        return resolved[:2], player_names
+
+    if re.search(r"\bel clasico\b|\bclasico espanol\b", query):
+        add_team("Real Madrid", "140")
+        add_team("Barcelona", "140")
+
+    index = _club_index()
+    matches: list[tuple[int, int, str, str]] = []
+    for alias, (canonical, league_id) in index.items():
+        if len(alias) < 3:
+            continue
+        m = re.search(rf"\b{re.escape(alias)}\b", query)
+        if m:
+            matches.append((m.start(), -len(alias), canonical, league_id))
+
+    matches.sort(key=lambda item: (item[0], item[1]))
+    for _, _, canonical, league_id in matches:
+        add_team(canonical, league_id)
+
+    for player_alias, (canonical, league_id) in sorted(
+        _STAR_PLAYER_TEAMS.items(), key=lambda kv: -len(kv[0])
+    ):
+        if re.search(rf"\b{re.escape(player_alias)}\b", query):
+            if player_alias not in player_names:
+                player_names.append(player_alias)
+            if len(resolved) < 2:
+                add_team(canonical, league_id)
+
+    # Búsqueda dinámica de cualquier jugador X (aunque no esté en _STAR_PLAYER_TEAMS)
+    if allow_player_lookup and not player_names:
+        known_tokens = set(seen_names)
+        for t in resolved:
+            known_tokens.update(_plain_text(t["name"]).split())
+        candidates = _extract_player_candidates(text, known_tokens)
+        if candidates:
+            with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
+                found_list = list(pool.map(_search_player_club, candidates))
+            for found in found_list:
+                if not found:
+                    continue
+                if found["player"] not in player_names:
+                    player_names.append(found["player"])
+                if len(resolved) < 2:
+                    add_team(found["team"], found["league_id"])
+
+    return resolved[:2], player_names
+
+
+def _espn_team_recent_matches(league_id: str, team_name: str, season: int, limit: int = 5) -> list[dict[str, Any]]:
+    """Devuelve los últimos `limit` partidos completados del equipo desde ESPN."""
+    league = ESPN_SOCCER_LEAGUES.get(str(league_id))
+    if not league or not team_name.strip():
+        return []
+    espn_team_id = _espn_team_id(league, team_name)
+    if not espn_team_id:
+        for alt in ESPN_LOGO_LOOKUP_LEAGUES.get(str(league_id), []):
+            espn_team_id = _espn_team_id(alt, team_name)
+            if espn_team_id:
+                league = alt
+                break
+    if not espn_team_id:
+        return []
+
+    cache_key = f"espn:last5-matches:{league}:{espn_team_id}:{season}:{limit}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    try:
+        schedule = _espn_json(
+            f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{espn_team_id}/schedule?season={season}"
+        )
+    except FootballAPIError:
+        return []
+
+    matches: list[dict[str, Any]] = []
+    for event in schedule.get("events") or []:
+        comp = next(iter(event.get("competitions") or []), {})
+        status = (comp.get("status") or {}).get("type") or {}
+        if not status.get("completed"):
+            continue
+        competitors = comp.get("competitors") or []
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+        hs, as_ = _espn_score(home.get("score")), _espn_score(away.get("score"))
+        if hs is None or as_ is None:
+            continue
+        home_team, away_team = home.get("team") or {}, away.get("team") or {}
+        is_home = str(home_team.get("id") or "") == espn_team_id
+        if not is_home and str(away_team.get("id") or "") != espn_team_id:
+            continue
+        gf, ga = (hs, as_) if is_home else (as_, hs)
+        opponent = (away_team.get("displayName") if is_home else home_team.get("displayName")) or "Rival"
+        res = "V" if gf > ga else "E" if gf == ga else "D"
+        matches.append({
+            "date": str(event.get("date") or "")[:10],
+            "home": home_team.get("displayName") or "",
+            "away": away_team.get("displayName") or "",
+            "opponent": opponent,
+            "side": "Local" if is_home else "Visitante",
+            "goals_for": gf,
+            "goals_against": ga,
+            "total_goals": gf + ga,
+            "result": res,
+            "btts": gf > 0 and ga > 0,
+            "over_2_5": (gf + ga) > 2,
+        })
+
+    matches.sort(key=lambda m: m["date"], reverse=True)
+    sample = matches[:limit]
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 30 * 60, sample)
+    return sample
+
+
+def team_last5_report(
+    team_name: str,
+    league_id: str,
+    season: int | None = None,
+    include_players: bool = False,
+    player_query: str = "",
+    limit: int = 5,
+) -> dict[str, Any] | None:
+    """Genera un reporte completo de los últimos 5 partidos (equipo y opcionalmente jugadores)."""
+    from datetime import datetime as _dt
+
+    target_season = season or _dt.now().year
+    candidate_leagues = [league_id] if league_id else []
+    for fallback_lid in ("39", "140", "78", "135", "61", "2"):
+        if fallback_lid not in candidate_leagues:
+            candidate_leagues.append(fallback_lid)
+
+    matches: list[dict[str, Any]] = []
+    used_league = league_id
+    used_season = target_season
+    for lid in candidate_leagues[:3]:
+        for yr in (target_season, target_season - 1):
+            matches = _espn_team_recent_matches(lid, team_name, yr, limit=limit)
+            if matches:
+                used_league = lid
+                used_season = yr
+                break
+        if matches:
+            break
+
+    if not matches:
+        return None
+
+    played = len(matches)
+    gf_tot = sum(m["goals_for"] for m in matches)
+    ga_tot = sum(m["goals_against"] for m in matches)
+    tot_goals = gf_tot + ga_tot
+    wins = sum(m["result"] == "V" for m in matches)
+    draws = sum(m["result"] == "E" for m in matches)
+    losses = sum(m["result"] == "D" for m in matches)
+    btts_cnt = sum(1 for m in matches if m["btts"])
+    over25_cnt = sum(1 for m in matches if m["over_2_5"])
+    clean_sheets = sum(1 for m in matches if m["goals_against"] == 0)
+    failed_score = sum(1 for m in matches if m["goals_for"] == 0)
+
+    players_summary: list[dict[str, Any]] = []
+    if include_players:
+        try:
+            events = recent_team_player_events(team_name, used_league, used_season, limit=limit)
+        except Exception:
+            events = []
+        if events:
+            by_player: dict[str, dict[str, Any]] = {}
+            target_norm = _plain_text(player_query)
+            team_norm = _plain_text(team_name)
+            for ev in events:
+                day = str(ev.get("date") or "")[:10]
+                match_label = f"{ev.get('home', '?')} vs {ev.get('away', '?')}"
+                score_label = f"{ev.get('home_score', '—')}-{ev.get('away_score', '—')}"
+                for p in ev.get("players") or []:
+                    p_team = _plain_text(str(p.get("team") or ""))
+                    if team_norm and p_team and team_norm not in p_team and p_team not in team_norm:
+                        # Permite siglas o variaciones como "Manchester City" vs "Man City"
+                        if not any(tok in p_team for tok in team_norm.split() if len(tok) > 3):
+                            continue
+                    p_name = str(p.get("name") or "").strip()
+                    if not p_name:
+                        continue
+                    key = _plain_text(p_name)
+                    entry = by_player.setdefault(key, {
+                        "name": p_name,
+                        "appearances": 0,
+                        "goals": 0,
+                        "assists": 0,
+                        "shots": 0,
+                        "shots_on_target": 0,
+                        "matches": [],
+                    })
+                    g = int(p.get("goals") or 0)
+                    a = int(p.get("assists") or 0)
+                    s = int(p.get("shots") or 0)
+                    sot = int(p.get("shots_on_target") or 0)
+                    entry["appearances"] += 1
+                    entry["goals"] += g
+                    entry["assists"] += a
+                    entry["shots"] += s
+                    entry["shots_on_target"] += sot
+                    entry["matches"].append({
+                        "date": day,
+                        "match": match_label,
+                        "score": score_label,
+                        "goals": g,
+                        "assists": a,
+                        "shots": s,
+                        "shots_on_target": sot,
+                    })
+
+            matched_players = []
+            exact_matches = []
+            token_matches = []
+            for p_key, entry in by_player.items():
+                if not target_norm:
+                    continue
+                if p_key in target_norm:
+                    exact_matches.append(entry)
+                    continue
+                parts = [t for t in p_key.split() if len(t) >= 4 and t not in _GENERIC_NAME_TOKENS]
+                if any(re.search(rf"\b{re.escape(tok)}\b", target_norm) for tok in parts):
+                    token_matches.append(entry)
+            matched_players = exact_matches or token_matches
+
+            pool = matched_players or sorted(
+                by_player.values(),
+                key=lambda x: (x["goals"], x["assists"], x["shots_on_target"], x["shots"]),
+                reverse=True,
+            )[:4]
+
+            for item in pool:
+                app_n = max(1, item["appearances"])
+                item["team_matches_checked"] = len(events)
+                item["goals_avg"] = round(item["goals"] / app_n, 2)
+                item["assists_avg"] = round(item["assists"] / app_n, 2)
+                item["shots_avg"] = round(item["shots"] / app_n, 2)
+                item["shots_on_target_avg"] = round(item["shots_on_target"] / app_n, 2)
+                item["matches_with_sot"] = sum(1 for m in item["matches"] if m["shots_on_target"] > 0)
+                item["matches_with_goal"] = sum(1 for m in item["matches"] if m["goals"] > 0)
+            players_summary = pool
+
+    return {
+        "team": team_name,
+        "league_id": used_league,
+        "league_name": FEATURED_COMPETITIONS.get(str(used_league), "Fútbol"),
+        "source": f"ESPN · últimos {played} partidos",
+        "matches": matches,
+        "averages": {
+            "played": played,
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "form": "-".join(m["result"] for m in matches),
+            "goals_for_total": gf_tot,
+            "goals_against_total": ga_tot,
+            "goals_for_avg": round(gf_tot / played, 2),
+            "goals_against_avg": round(ga_tot / played, 2),
+            "total_goals_avg": round(tot_goals / played, 2),
+            "btts_count": btts_cnt,
+            "btts_pct": round(100 * btts_cnt / played),
+            "over_2_5_count": over25_cnt,
+            "over_2_5_pct": round(100 * over25_cnt / played),
+            "clean_sheets": clean_sheets,
+            "failed_to_score": failed_score,
+        },
+        "players": players_summary,
+    }

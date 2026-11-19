@@ -403,6 +403,31 @@ main#inicio{width:100%;max-width:none}
 .data-caption,.muted,.catalog-note{font-size:12px}
 .chat-heading h1{font-size:22px}
 .msg__bubble{font-size:15px}
+
+/* Conversation switching, saved local history, and collapsible preferences */
+@media(max-width:900px){.dashboard-grid#home-view>.left-column .status-card{display:block}}
+.preferences-card .switch{position:relative;flex:none;width:42px;min-width:42px;height:24px;padding:3px;border:0;border-radius:20px;background:#38434a;cursor:pointer}
+.preferences-card .switch span{position:absolute;top:3px;right:auto;left:3px;display:block;width:18px;height:18px;border-radius:50%;background:#c7d2cc;transition:transform .18s ease,background .18s ease}
+.preferences-card .switch[aria-pressed="true"]{background:#078b65}
+.preferences-card .switch[aria-pressed="true"] span{transform:translateX(18px);background:#a9ffe0}
+.preferences-card.is-collapsed{padding-bottom:12px}
+.preferences-card.is-collapsed>:not(.section-heading){display:none}
+.conversation-toolbar{display:flex;align-items:center;gap:9px;padding:9px 17px;border-bottom:1px solid #ffffff0c;background:#111920}
+.new-conversation-button{min-height:36px;padding:7px 12px;border:1px solid #00e47944;border-radius:9px;background:#103329;color:#b7ffdd;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.conversation-picker-label{color:#9eaea9;font-size:12px;font-weight:600}
+#conversation-picker{min-width:150px;max-width:250px;height:36px;padding:0 10px;border:1px solid #ffffff16;border-radius:9px;background:#0c141b;color:#e4eee9;font:inherit;font-size:13px}
+.history-persistence{margin-left:auto;color:#91aaa0;font-size:11px}
+.chat-fixture-kickoff{line-height:1.5}
+@media(max-width:760px){
+  .mobile-menu{display:grid;place-items:center;width:36px;height:36px;margin-left:auto}
+  .dashboard-grid#home-view>.left-column.mobile-open{position:fixed;top:68px;bottom:78px;left:10px;z-index:140;display:flex;width:min(88vw,360px);padding:12px;border:1px solid #ffffff1c;border-radius:14px;background:#0c141b;box-shadow:0 18px 50px #000b}
+  .dashboard-grid#home-view>.left-column.mobile-open .status-card{display:block}
+  .conversation-toolbar{flex-wrap:wrap;gap:7px;padding:8px 0}
+  .new-conversation-button{min-height:38px;font-size:12px}
+  #conversation-picker{flex:1;min-width:130px;max-width:none}
+  .history-persistence{width:100%;margin:0 2px;font-size:11px}
+  .conversation-picker-label{font-size:11px}
+}
 .chip{min-height:40px;padding:9px 13px;font-size:13px}
 .composer textarea{font-size:15px}
 .send-button{width:42px;height:42px}

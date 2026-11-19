@@ -34,7 +34,7 @@
       <aside class="left-column" id="ligas">
         <section class="surface status-card" aria-label="Estado del servicio">
           <div class="section-heading"><h2>Estado del servicio</h2><span class="icon-bubble">⌁</span></div>
-          <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li></ul>
+          <ul class="status-list"><li><span class="dot" id="dot-api"></span>API FastAPI<em id="st-api">—</em></li><li><span class="dot" id="dot-llm"></span>Analista IA<em id="st-llm">—</em></li><li><span class="dot" id="dot-vec"></span>Datos RAG<em id="st-vec">—</em></li><li><span class="dot ok"></span>Historial<em id="st-history">SQLite local</em></li></ul>
         </section>
         <section class="surface preferences-card">
           <div class="section-heading"><h2>Preferencias</h2><button class="switch" type="button" aria-label="Preferencias activadas"><span></span></button></div>
@@ -64,8 +64,9 @@
         <header class="chat-heading">
           <div><p class="eyebrow">Análisis con datos disponibles</p><h1>Asistente IA</h1></div>
           <span class="connection-state"><i></i><span id="provider-label">Conectando…</span></span>
-          <button class="btn-icon mobile-menu" id="btn-menu" type="button" aria-label="Abrir ligas">☰</button>
+          <button class="btn-icon mobile-menu" id="btn-menu" type="button" aria-label="Mostrar preferencias y ligas" aria-expanded="false">☰</button>
         </header>
+        <div class="conversation-toolbar" id="conversation-toolbar"><button class="new-conversation-button" id="new-conversation" type="button">＋ Nueva conversación</button><label class="conversation-picker-label" for="conversation-picker">Conversaciones</label><select id="conversation-picker" aria-label="Cambiar conversación"></select><span class="history-persistence">Historial guardado en este equipo</span></div>
         <div class="messages" id="messages" aria-live="polite">
           <article class="msg msg--bot"><div class="msg__avatar">S</div><div class="msg__bubble"><p>¡Hola! Soy <strong>StatStriker</strong>, tu analista de datos deportivos.</p><p>Cuéntame tu propuesta de apuesta y la evaluaré con estadísticas, enfrentamientos, contexto y riesgo.</p></div></article>
         </div>

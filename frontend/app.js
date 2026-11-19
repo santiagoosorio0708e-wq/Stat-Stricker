@@ -12,9 +12,13 @@ const FIXTURE_CACHE_TTL = 3 * 60 * 1000;
 const PROFILE_STORAGE_KEY = "statstriker_profile_v1";
 const AVATAR_STORAGE_KEY = "statstriker_profile_avatar_v1";
 const FAVORITE_TEAM_KEY = "statstriker_favorite_teams_v1";
+const CONVERSATIONS_KEY = "statstriker_conversations_v1";
+const PREFERENCES_ENABLED_KEY = "statstriker_preferences_enabled_v1";
 const FEATURED_LEAGUE_IDS = ["39", "140", "78", "135", "61", "2", "3", "13", "71", "253", "143"];
-let sessionId = localStorage.getItem(SESSION_KEY) || newSessionId();
+let conversations = loadConversations();
+let sessionId = localStorage.getItem(SESSION_KEY) || conversations[0]?.id || newSessionId();
 localStorage.setItem(SESSION_KEY, sessionId);
+if (!conversations.some((conversation) => conversation.id === sessionId)) conversations.unshift({ id: sessionId, title: "Conversación anterior", createdAt: Date.now(), updatedAt: Date.now(), matchContext: null });
 
 const $ = (selector) => document.querySelector(selector);
 const els = {
@@ -56,11 +60,11 @@ const RULE_LABELS = {
   perfil_agresivo: ["🔥 Agresivo", "red"], kelly: ["🧮 Kelly", ""], mercado_1x2: ["1X2", "green"],
   mercado_doble_oportunidad: ["Doble oportunidad", "green"], mercado_over_under: ["Over/Under", "green"],
   mercado_btts: ["BTTS", "green"], mercado_handicap: ["Hándicap", "green"], mercado_corners: ["Córners", "green"],
-  mercado_tarjetas: ["Tarjetas", "green"],
+  mercado_tarjetas: ["Tarjetas", "green"], ultimos_5_partidos: ["📊 Últimos 5P", "green"], estadisticas_jugador: ["🏃 Jugador", "green"], valor_cuota_objetiva: ["💎 Cuota objetiva", "yellow"],
 };
 let selectedLeague = LEAGUES[0];
 let catalog = {};
-let busy = false;
+const pendingChats = new Set();
 let liveMatches = [];
 let liveFilter = "live";
 let liveRefreshTimer = null;
@@ -78,12 +82,35 @@ let favoriteLeagueIds = loadFavoriteLeagues();
 let favoriteTeams = loadFavoriteTeams();
 let recommendedTeamGroups = [];
 let agendaRequest = 0;
+let agendaFixtures = [];
 let analyticsData = null;
 let selectedAnalyticsMatch = "";
 let comparisonLeagueTeams = [];
 let comparisonRequestId = 0;
 
 function newSessionId() { return crypto.randomUUID ? crypto.randomUUID() : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function loadConversations() {
+  try { const value = JSON.parse(localStorage.getItem(CONVERSATIONS_KEY) || "[]"); return Array.isArray(value) ? value.filter((item) => item?.id) : []; }
+  catch { return []; }
+}
+function saveConversations() { localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations)); }
+function activeConversation() { return conversations.find((item) => item.id === sessionId); }
+function restoreFixtureContext(context) {
+  if (!context) return null;
+  return { ...context, time: parseFixtureTime(context.time), homeLogo: context.homeLogo || context.home_logo || "", awayLogo: context.awayLogo || context.away_logo || "" };
+}
+function renderConversations() {
+  const picker = $("#conversation-picker");
+  if (!picker) return;
+  picker.innerHTML = conversations.slice().sort((a, b) => b.updatedAt - a.updatedAt).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title || "Nueva conversación")}</option>`).join("");
+  picker.value = sessionId;
+}
+function setConversationTitle(message) {
+  const conversation = activeConversation();
+  if (!conversation || conversation.title !== "Conversación anterior" && conversation.title !== "Nueva conversación") return;
+  conversation.title = message.replace(/\s+/g, " ").trim().slice(0, 42) || "Nueva conversación";
+  conversation.updatedAt = Date.now(); saveConversations(); renderConversations();
+}
 function escapeHtml(value) { return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function safeImage(url) { return typeof url === "string" && /^https:\/\//i.test(url) ? escapeHtml(url) : ""; }
 async function api(path, options = {}) {
@@ -250,6 +277,8 @@ async function loadHealth() {
     if ($("#topbar-api-label")) $("#topbar-api-label").textContent = "API online";
     setStatus("llm", health.llm.ready ? (health.llm.provider === "mock" ? "warn" : "ok") : "err", health.llm.ready ? health.llm.provider : "sin API key");
     setStatus("vec", health.vector_db.documents ? "ok" : "warn", health.vector_db.documents ? `${health.vector_db.documents} docs` : "sin datos");
+    const historyStatus = $("#st-history");
+    if (historyStatus) historyStatus.textContent = health.history_storage?.persistent ? "SQLite local" : "No disponible";
     els.providerLabel.textContent = health.llm.ready ? `Modelo ${health.llm.provider} · embeddings ${health.embedding_provider}` : "Analista IA sin configurar";
   } catch {
     setStatus("api", "err", "offline"); setStatus("llm", "err", "—"); setStatus("vec", "err", "—");
@@ -266,6 +295,7 @@ function crestFor(name) {
 function teamSide(name) { const badge = crestFor(name); return `<div class="match-side">${badge ? `<img class="team-badge" src="${badge}" data-initial="${escapeHtml(name.slice(0, 1).toUpperCase())}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(name.slice(0, 1))}</span>`}<span>${escapeHtml(name)}</span></div>`; }
 async function loadMatches() {
   const token = ++agendaRequest;
+  agendaFixtures = [];
   els.matches.innerHTML = `<p class="loading-state"><span class="loader"></span> Buscando los encuentros más cercanos…</p>`;
   const recommendedTeams = [0, 1, 2].flatMap((rank) => recommendedTeamGroups.flatMap(({ league, teams }) => {
     const team = teams?.[rank];
@@ -281,6 +311,7 @@ async function loadMatches() {
   const agendaTeams = favoriteTeams.length ? favoriteTeams : recommendedTeams;
   const selectedTeams = agendaTeams.filter((team) => team.id && team.season).slice(0, 10);
   if (!selectedTeams.length) {
+    agendaFixtures = [];
     els.matches.innerHTML = `<p class="loading-state">Selecciona una liga favorita para ver sus próximos partidos.</p>`;
     return;
   }
@@ -292,16 +323,37 @@ async function loadMatches() {
       } catch { return []; }
     }));
     if (token !== agendaRequest) return;
+    const officialFallback = verifiedLaLigaFallbackFixtures().filter((fixture) =>
+      selectedTeams.some((team) => [fixture.homeTeamId, fixture.awayTeamId].includes(String(team.id)))
+    );
+    const apiFixtures = schedules.flat();
+    const currentFixtures = [
+      ...apiFixtures.filter((fixture) => !officialFallback.some((official) =>
+        [fixture.homeTeamId, fixture.awayTeamId].includes(official.homeTeamId)
+        && [fixture.homeTeamId, fixture.awayTeamId].includes(official.awayTeamId)
+      )),
+      ...officialFallback,
+    ];
     const now = Date.now(), unique = new Map();
-    schedules.flat().forEach((fixture) => {
+    currentFixtures.forEach((fixture) => {
       if (!fixture.time || Number.isNaN(fixture.time.valueOf()) || fixture.time.valueOf() < now) return;
       const key = fixture.id || `${fixture.home}|${fixture.away}|${fixture.time.toISOString()}`;
       if (!unique.has(key)) unique.set(key, fixture);
     });
-    renderMatches([...unique.values()].sort((a, b) => a.time - b.time).slice(0, 3));
+    agendaFixtures = [...unique.values()].sort((a, b) => a.time - b.time).slice(0, 3);
+    renderMatches(agendaFixtures);
   } catch {
+    if (token === agendaRequest) agendaFixtures = [];
     if (token === agendaRequest) els.matches.innerHTML = `<p class="loading-state">No se pudo cargar la agenda. Intenta actualizar más tarde.</p>`;
   }
+}
+function verifiedLaLigaFallbackFixtures() {
+  const fixtures = [
+    { id: "rm-celta-20261121", home: "Real Madrid", away: "Celta Vigo", home_id: "133738", away_id: "133937", home_logo: "https://r2.thesportsdb.com/images/media/team/badge/vwvwrw1473502969.png", away_logo: "https://r2.thesportsdb.com/images/media/team/badge/xfjtku1690436219.png", competition: "LaLiga", competition_id: "140", competition_logo: "https://r2.thesportsdb.com/images/media/league/badge/ja4it51687628717.png", round: "13", time: "2026-11-21T15:00:00-05:00", status: "NS" },
+    { id: "barca-villarreal-20261122", home: "Barcelona", away: "Villarreal", home_id: "133739", away_id: "133740", home_logo: "https://r2.thesportsdb.com/images/media/team/badge/wq9sir1639406443.png", away_logo: "https://r2.thesportsdb.com/images/media/team/badge/vrypqy1473503073.png", competition: "LaLiga", competition_id: "140", competition_logo: "https://r2.thesportsdb.com/images/media/league/badge/ja4it51687628717.png", round: "13", time: "2026-11-22T08:00:00-05:00", status: "NS" },
+    { id: "getafe-atleti-20261122", home: "Getafe", away: "Atlético Madrid", home_id: "133731", away_id: "133729", home_logo: "https://r2.thesportsdb.com/images/media/team/badge/eyh2891655594452.png", away_logo: "https://r2.thesportsdb.com/images/media/team/badge/0ulh3q1719984315.png", competition: "LaLiga", competition_id: "140", competition_logo: "https://r2.thesportsdb.com/images/media/league/badge/ja4it51687628717.png", round: "13", time: "2026-11-22T15:00:00-05:00", status: "NS" },
+  ].map(normalizeFixture);
+  return fixtures.filter((fixture) => fixture.time && fixture.time.valueOf() >= Date.now());
 }
 function renderMatches(matches) {
   if (!matches.length) { els.matches.innerHTML = `<p class="loading-state">No encontramos próximos partidos de tus equipos preferidos.</p>`; return; }
@@ -309,17 +361,37 @@ function renderMatches(matches) {
     const leagueLogo = match.competitionLogo ? `<img src="${match.competitionLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : "⚽";
     const homeLogo = match.homeLogo ? `<img src="${match.homeLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(match.home.slice(0, 1))}</span>`;
     const awayLogo = match.awayLogo ? `<img src="${match.awayLogo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(match.away.slice(0, 1))}</span>`;
-    const date = match.time ? new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "short", year: "numeric" }).format(match.time) : "Fecha por confirmar";
     const round = match.round ? ` · Jornada ${String(match.round).replace(/^regular season\s*-\s*/i, "")}` : "";
-    const prompt = `Analiza el partido ${match.home} vs ${match.away} de ${match.competition}. Fecha y hora: ${fixtureLongDate(match)}.`;
-    return `<button class="match-card" type="button" data-q="${escapeHtml(prompt)}"><span class="match-card__comp">${leagueLogo}<span>${escapeHtml(match.competition)}${escapeHtml(round)}</span></span><span class="match-card__teams"><span class="match-side">${homeLogo}<span>${escapeHtml(match.home)}</span></span><span class="match-vs">vs</span><span class="match-side">${awayLogo}<span>${escapeHtml(match.away)}</span></span></span><span class="match-card__date">◷ ${escapeHtml(date)} · ${escapeHtml(fixtureClock(match))}</span></button>`;
+    const preciseDate = fixtureLongDate(match);
+    const prompt = `Analiza el partido ${match.home} vs ${match.away} de ${match.competition}. Fecha y hora: ${preciseDate} (hora de Colombia).`;
+    return `<button class="match-card" type="button" data-fixture-id="${escapeHtml(match.id)}" data-q="${escapeHtml(prompt)}"><span class="match-card__comp">${leagueLogo}<span>${escapeHtml(match.competition)}${escapeHtml(round)}</span></span><span class="match-card__teams"><span class="match-side">${homeLogo}<span>${escapeHtml(match.home)}</span></span><span class="match-vs">vs</span><span class="match-side">${awayLogo}<span>${escapeHtml(match.away)}</span></span></span><span class="match-card__date">◷ ${escapeHtml(preciseDate)} · hora de Colombia</span></button>`;
   }).join("");
 }
 async function loadHistory() {
+  const activeId = sessionId;
   try {
-    const history = await api(`/api/history/${encodeURIComponent(sessionId)}`);
+    const history = await api(`/api/history/${encodeURIComponent(activeId)}`);
+    if (sessionId !== activeId) return;
+    els.messages.innerHTML = "";
+    if (!history.length) renderWelcomeMessage();
     history.forEach((item) => { addUserMessage(item.user_message); addBotMessage({ answer: item.bot_response, active_rules: item.active_rules, sources: item.sources }); });
-  } catch { /* el chat informa si la API no está disponible */ }
+  } catch { if (sessionId === activeId) renderWelcomeMessage(); }
+}
+function renderWelcomeMessage() {
+  els.messages.innerHTML = `<article class="msg msg--bot"><div class="msg__avatar">S</div><div class="msg__bubble"><p>¡Hola! Soy <strong>StatStriker</strong>, tu analista de datos deportivos.</p><p>Cuéntame tu propuesta de apuesta y la evaluaré con estadísticas, enfrentamientos, contexto y riesgo.</p></div></article>`;
+}
+function switchConversation(id) {
+  if (!conversations.some((item) => item.id === id) || id === sessionId) return;
+  sessionId = id; localStorage.setItem(SESSION_KEY, sessionId);
+  lastFixtureContext = restoreFixtureContext(activeConversation()?.matchContext);
+  els.send.disabled = pendingChats.has(sessionId);
+  renderConversations(); loadHistory();
+}
+function createConversation() {
+  const id = newSessionId();
+  conversations.push({ id, title: "Nueva conversación", createdAt: Date.now(), updatedAt: Date.now(), matchContext: null });
+  saveConversations(); sessionId = id; localStorage.setItem(SESSION_KEY, id);
+  lastFixtureContext = null; els.send.disabled = false; renderConversations(); renderWelcomeMessage(); els.input.value = ""; autoResize(); els.input.focus();
 }
 function normalizeMention(text) {
   return String(text || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/[^a-z0-9]+/g, " ").trim();
@@ -327,15 +399,27 @@ function normalizeMention(text) {
 function findMentionedFixture(message) {
   const query = normalizeMention(message);
   const live = liveMatches.map(normalizeFixture);
-  const candidates = [...upcomingFixtures, ...live];
-  const teams = (fixture) => [normalizeMention(fixture.home), normalizeMention(fixture.away)].filter((name) => name.length >= 4);
+  const candidates = [...upcomingFixtures, ...agendaFixtures, ...live, ...verifiedLaLigaFallbackFixtures()];
+  const aliases = {
+    "real madrid": ["real madrid", "madrid"],
+    "celta vigo": ["celta vigo", "celta de vigo", "celta"],
+    "atletico madrid": ["atletico madrid", "atletico de madrid", "atletico"],
+    "athletic club": ["athletic club", "athletic bilbao"],
+    "real betis": ["real betis", "betis"],
+  };
+  const mentionsTeam = (team) => {
+    const name = normalizeMention(team);
+    return (aliases[name] || [name]).some((alias) => (` ${query} `).includes(` ${alias} `));
+  };
+  const teams = (fixture) => [fixture.home, fixture.away].filter(Boolean);
   const both = candidates.find((fixture) => {
     const [home, away] = teams(fixture);
-    return home && away && query.includes(home) && query.includes(away);
+    return home && away && mentionsTeam(home) && mentionsTeam(away);
   });
   if (both) return both;
+  if (lastFixtureContext && /este partido|ese partido|este encuentro|este juego|de ese partido|del partido/.test(query)) return lastFixtureContext;
   if (!/cuando|fecha|hora|proximo|proxima|juega|partido|enfrenta/.test(query)) return null;
-  return candidates.find((fixture) => teams(fixture).some((name) => query.includes(name))) || null;
+  return candidates.find((fixture) => teams(fixture).some(mentionsTeam)) || null;
 }
 async function findNextFixtureForMessage(message) {
   const query = normalizeMention(message);
@@ -350,11 +434,11 @@ async function findNextFixtureForMessage(message) {
   let mentionedTeams = findTeams();
   const namesBothMentioned = /\b(vs|contra)\b/.test(query);
   if (!mentionedTeams.length || (namesBothMentioned && mentionedTeams.length < 2)) {
-    const relevantLeagues = [...new Map([...LEAGUES.filter((league) => favoriteLeagueIds.includes(league.id)), selectedLeague].map((league) => [league.id, league])).values()];
+    const relevantLeagues = [selectedLeague];
     await Promise.all(relevantLeagues.map(async (league) => {
       if (catalog[league.id] || !league.season) return;
       try {
-        const data = await api(`/api/football/teams?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`, { signal: AbortSignal.timeout(12000) });
+        const data = await api(`/api/football/teams?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`, { signal: AbortSignal.timeout(3000) });
         catalog[league.id] = data.teams || [];
         saveCachedCatalog(league.id, catalog[league.id]);
       } catch { /* se consultan las ligas restantes */ }
@@ -365,7 +449,7 @@ async function findNextFixtureForMessage(message) {
   const lead = mentionedTeams[0], league = lead.league;
   if (!league?.season) return null;
   try {
-    const data = await api(`/api/football/team-fixtures?team_id=${encodeURIComponent(lead.id)}&season=${encodeURIComponent(league.season)}&limit=10`, { signal: AbortSignal.timeout(15000) });
+    const data = await api(`/api/football/team-fixtures?team_id=${encodeURIComponent(lead.id)}&season=${encodeURIComponent(league.season)}&limit=10`, { signal: AbortSignal.timeout(4000) });
     const fixtures = (Array.isArray(data.matches) ? data.matches : []).map(normalizeFixture);
     const opponent = mentionedTeams.find((team) => team.id !== lead.id);
     if (opponent) {
@@ -383,21 +467,30 @@ async function findNextFixtureForMessage(message) {
   } catch { return null; }
 }
 async function sendMessage(text, { retry = false } = {}) {
-  const message = text.trim(); if (!message || busy) return;
-  const asksSchedule = /\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio)\b/i.test(message);
-  busy = true; els.send.disabled = true;
-  if (!retry) { els.input.value = ""; autoResize(); addUserMessage(message); }
+  const message = text.trim();
+  const requestSessionId = sessionId;
+  if (!message || pendingChats.has(requestSessionId)) return;
+  const normalizedMessage = normalizeMention(message);
+  const asksSchedule = /\b(cuando|que dia|a que hora|fecha|horario|hora de inicio)\b/.test(normalizedMessage);
+  pendingChats.add(requestSessionId); els.send.disabled = true;
+  if (!retry) { els.input.value = ""; autoResize(); addUserMessage(message); setConversationTitle(message); }
   const typing = addTyping();
   try {
     let matchContext = findMentionedFixture(message);
-    if (!matchContext) matchContext = await findNextFixtureForMessage(message);
-    if (!matchContext && asksSchedule) matchContext = lastFixtureContext;
-    if (matchContext) lastFixtureContext = matchContext;
+    const needsFixtureLookup = /\b(cuando|que dia|a que hora|fecha|horario|proxim[oa]? partido|analiza (?:el )?partido|partido de|vs|contra)\b/.test(normalizedMessage);
+    if (!matchContext && needsFixtureLookup) matchContext = await findNextFixtureForMessage(message);
+    if (!matchContext && asksSchedule) matchContext = activeConversation()?.matchContext || lastFixtureContext;
+    if (matchContext) {
+      lastFixtureContext = matchContext;
+      const conversation = conversations.find((item) => item.id === requestSessionId);
+      if (conversation) { conversation.matchContext = matchContext; saveConversations(); }
+    }
     const data = await api("/api/chat", {
       method: "POST",
+      signal: AbortSignal.timeout(35000),
       body: JSON.stringify({
         message,
-        session_id: sessionId,
+        session_id: requestSessionId,
         match_context: matchContext ? {
           id: matchContext.id, home: matchContext.home, away: matchContext.away,
           home_logo: matchContext.homeLogo, away_logo: matchContext.awayLogo,
@@ -407,9 +500,14 @@ async function sendMessage(text, { retry = false } = {}) {
         } : null,
       }),
     });
-    typing.remove(); addBotMessage(data, { fixture: matchContext });
-  } catch (error) { typing.remove(); addBotMessage({ answer: `**No se completó la solicitud.** ${error.message}` }, { isError: true, retryMessage: message }); }
-  finally { busy = false; els.send.disabled = false; els.input.focus(); }
+    typing.remove(); if (sessionId === requestSessionId) addBotMessage(data, { fixture: matchContext });
+  } catch (error) {
+    typing.remove();
+    if (sessionId === requestSessionId) addBotMessage({ answer: "**No se completó la solicitud.** " + (error.name === "TimeoutError" ? "La solicitud tardó más de 35 segundos. Puedes reintentar." : error.message) }, { isError: true, retryMessage: message });
+  } finally {
+    pendingChats.delete(requestSessionId);
+    if (sessionId === requestSessionId) { els.send.disabled = false; els.input.focus(); }
+  }
 }
 els.messages.addEventListener("click", (event) => {
   const retryButton = event.target.closest("[data-retry-message]");
@@ -418,6 +516,19 @@ els.messages.addEventListener("click", (event) => {
 function autoResize() { els.input.style.height = "auto"; els.input.style.height = `${Math.min(els.input.scrollHeight, 120)}px`; }
 
 els.form.addEventListener("submit", (event) => { event.preventDefault(); sendMessage(els.input.value); });
+$("#new-conversation")?.addEventListener("click", createConversation);
+$("#conversation-picker")?.addEventListener("change", (event) => switchConversation(event.target.value));
+function applyPreferencesState(enabled) {
+  const card = $(".preferences-card"), toggle = $(".preferences-card .switch");
+  card?.classList.toggle("is-collapsed", !enabled);
+  if (toggle) { toggle.setAttribute("aria-pressed", String(enabled)); toggle.setAttribute("aria-label", enabled ? "Desactivar preferencias" : "Activar preferencias"); }
+  localStorage.setItem(PREFERENCES_ENABLED_KEY, String(enabled));
+}
+const preferencesToggle = $(".preferences-card .switch");
+if (preferencesToggle) {
+  applyPreferencesState(localStorage.getItem(PREFERENCES_ENABLED_KEY) !== "false");
+  preferencesToggle.addEventListener("click", () => applyPreferencesState(preferencesToggle.getAttribute("aria-pressed") !== "true"));
+}
 els.input.addEventListener("input", autoResize);
 els.input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(els.input.value); } });
 els.chips.addEventListener("click", (event) => { const chip = event.target.closest(".chip"); if (chip) sendMessage(chip.textContent); });
@@ -425,16 +536,23 @@ els.leagueList.addEventListener("click", (event) => { const button = event.targe
 els.teamSearch.addEventListener("input", () => renderTeams(catalog[selectedLeague.id] || []));
 els.teamList.addEventListener("click", (event) => { const button = event.target.closest("[data-team]"); if (button) { els.input.value = `Analiza el próximo partido de ${button.dataset.team}`; autoResize(); els.input.focus(); $("#chat").scrollIntoView({ behavior: "smooth", block: "start" }); } });
 function handleBadgeError(event) {
-  const image = event.target.closest(".team-badge");
+  const image = event.target.closest(".team-badge, .comparison-team-badge");
   if (!image) return;
+  const alternate = image.dataset.fallback;
+  if (alternate && image.dataset.fallbackTried !== "true") {
+    image.dataset.fallbackTried = "true";
+    image.src = alternate;
+    return;
+  }
   const fallback = document.createElement("span"); fallback.className = "team-placeholder"; fallback.textContent = image.dataset.initial || "⚽"; image.replaceWith(fallback);
 }
 els.teamList.addEventListener("error", handleBadgeError, true);
 els.matches.addEventListener("error", handleBadgeError, true);
-function useMatch(event) { const card = event.target.closest(".match-card"); if (!card) return; els.input.value = card.dataset.q; autoResize(); els.input.focus(); $("#chat").scrollIntoView({ behavior: "smooth", block: "start" }); }
+$("#comparison-results").addEventListener("error", handleBadgeError, true);
+function useMatch(event) { const card = event.target.closest(".match-card"); if (!card) return; const fixture = agendaFixtures.find((item) => item.id === card.dataset.fixtureId); if (fixture) { lastFixtureContext = fixture; const conversation = activeConversation(); if (conversation) { conversation.matchContext = fixture; saveConversations(); } } els.input.value = card.dataset.q; autoResize(); els.input.focus(); $("#chat").scrollIntoView({ behavior: "smooth", block: "start" }); }
 els.matches.addEventListener("click", useMatch);
 els.matches.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); useMatch(event); } });
-els.menu.addEventListener("click", () => $("#ligas").scrollIntoView({ behavior: "smooth", block: "start" }));
+els.menu.addEventListener("click", () => { const sidebar = $("#ligas"), open = sidebar.classList.toggle("mobile-open"); els.menu.setAttribute("aria-expanded", String(open)); });
 
 function setView(view) {
   const isLive = view === "live";
@@ -696,12 +814,19 @@ function normalizeFixture(fixture) {
     round: fixture.round || fixture.league?.round || "",
     homeTeamId: String(fixture.home_id || fixture.teams?.home?.id || ""),
     awayTeamId: String(fixture.away_id || fixture.teams?.away?.id || ""),
-    time: time ? new Date(time) : null, status: String(fixture.status || fixture.state || "upcoming"),
+    time: parseFixtureTime(time), status: String(fixture.status || fixture.state || "upcoming"),
     statusText: String(fixture.status_text || fixture.statusText || ""),
     homeScore: fixture.home_score ?? fixture.goals?.home ?? null,
     awayScore: fixture.away_score ?? fixture.goals?.away ?? null,
     venue: fixture.venue || fixture.stadium || "", odds: fixture.odds || fixture.bookmakers || null,
   };
+}
+function parseFixtureTime(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(text) ? `${text}Z` : text;
+  const date = new Date(normalized);
+  return Number.isNaN(date.valueOf()) ? null : date;
 }
 function fixtureLeagueId(competition) {
   const name = String(competition || "").toLocaleLowerCase("es").normalize("NFD").replace(/\p{Diacritic}/gu, "");
@@ -731,10 +856,10 @@ function fixtureClock(fixture) {
 }
 function fixtureLongDate(fixture) {
   if (!fixture.time || Number.isNaN(fixture.time.valueOf())) return "Fecha por confirmar";
-  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(fixture.time);
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixture.time);
 }
 function selectedDateLabel() {
-  const date = new Date(`${selectedFixtureDate}T12:00:00-05:00`);
+  const date = new Date(`${selectedFixtureDate}T17:00:00Z`);
   return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(date);
 }
 function renderFixtureCard(fixture) {
@@ -752,7 +877,7 @@ function renderFixtureCard(fixture) {
   const recommendationText = recommendation
     ? `<div class="fixture-recommendation"><strong>Opci?n a revisar ? ${escapeHtml(recommendation.title || "An?lisis disponible")}</strong><span>${escapeHtml(recommendation.summary || "Revisa los datos antes de elegir un mercado.")}</span></div>`
     : `<div class="fixture-recommendation"><strong>${quickAnalysisState.loading ? "Analizando este partido?" : quickAnalysisState.error ? "Mercados para revisar con datos limitados" : "Mercados para evaluar"}</strong><span>${quickAnalysisState.error ? "Consulta las estad?sticas disponibles antes de elegir." : "1X2 ? M?s/Menos 2.5 ? Ambos marcan"}</span></div>`;
-  return `<article class="fixture-card ${favorite ? "is-favorite" : ""}"><div class="fixture-card-top"><span class="fixture-league">${competitionLogo}${escapeHtml(fixture.competition)}</span><span class="fixture-status">${tag}</span></div><div class="fixture-matchup"><div class="fixture-club">${homeLogo}<span>${escapeHtml(fixture.home)}</span></div><div class="fixture-kickoff"><strong>${escapeHtml(center)}</strong><small>${escapeHtml(fixtureLongDate(fixture).split(",")[0])}</small></div><div class="fixture-club away">${awayLogo}<span>${escapeHtml(fixture.away)}</span></div></div><div class="fixture-card-meta"><span>${fixture.venue ? `⌖ ${escapeHtml(fixture.venue)}` : "Calendario oficial"}</span>${favorite ? `<span class="favorite-tag">★ En favoritos</span>` : ""}</div><div class="fixture-recommendation-label">An?lisis del partido y mercados</div><div class="fixture-markets"><span>1X2</span><span>Más/Menos 2.5</span><span>Ambos marcan</span></div>${recommendationText}<button class="fixture-analysis-button" type="button" data-analyze-fixture="${escapeHtml(fixture.id)}">Analizar con Chatbot <span>↗</span></button></article>`;
+  return `<article class="fixture-card ${favorite ? "is-favorite" : ""}"><div class="fixture-card-top"><span class="fixture-league">${competitionLogo}${escapeHtml(fixture.competition)}</span><span class="fixture-status">${tag}</span></div><div class="fixture-matchup"><div class="fixture-club">${homeLogo}<span>${escapeHtml(fixture.home)}</span></div><div class="fixture-kickoff"><strong>${escapeHtml(center)}</strong><small>${escapeHtml(fixtureLongDate(fixture) + " - hora de Colombia")}</small></div><div class="fixture-club away">${awayLogo}<span>${escapeHtml(fixture.away)}</span></div></div><div class="fixture-card-meta"><span>${fixture.venue ? `⌖ ${escapeHtml(fixture.venue)}` : "Calendario oficial"}</span>${favorite ? `<span class="favorite-tag">★ En favoritos</span>` : ""}</div><div class="fixture-recommendation-label">Análisis del partido y mercados</div><div class="fixture-markets"><span>1X2</span><span>Más/Menos 2.5</span><span>Ambos marcan</span></div>${recommendationText}<button class="fixture-analysis-button" type="button" data-analyze-fixture="${escapeHtml(fixture.id)}">Analizar con Chatbot <span>↗</span></button></article>`;
 }
 function renderFavoriteLeagues() {
   const host = $("#favorite-leagues");
@@ -1132,12 +1257,14 @@ async function loadComparisonTeams(leagueId) {
   one.disabled = true; two.disabled = true;
   try {
     const cachedTeams = catalog[league.id]?.length ? catalog[league.id] : getCachedCatalog(league.id);
-    const data = cachedTeams
+    const cachedTeamsHaveBadges = cachedTeams?.length && cachedTeams.every((team) => team.badge || team.logo);
+    const data = cachedTeamsHaveBadges
       ? { teams: cachedTeams }
       : await api(`/api/football/teams?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}`);
     if (token !== comparisonRequestId) return;
     comparisonLeagueTeams = (data.teams || []).map((team) => ({ ...team, id: String(team.id || team.team_id) })).filter((team) => team.id && team.name);
     catalog[league.id] = comparisonLeagueTeams;
+    saveCachedCatalog(league.id, comparisonLeagueTeams);
     if (league.id === "2") {
       $("#comparison-group").value = "1";
       applyComparisonPot();
@@ -1158,24 +1285,36 @@ async function loadComparisonTeams(leagueId) {
   }
 }
 function renderTeamComparison(home, away) {
+  const recentSample = String(home.source || "").includes("últimos") && String(away.source || "").includes("últimos");
   const stats = [
-    ["Posición de liga", home.rank, away.rank], ["Puntos", home.points, away.points],
-    ["Partidos jugados", home.played, away.played], ["Victorias", home.wins, away.wins],
+    ["Posición de liga", home.rank, away.rank],
+    [recentSample ? "Puntos en la muestra" : "Puntos", recentSample ? home.sample_points : home.points, recentSample ? away.sample_points : away.points],
+    [recentSample ? "Partidos en la muestra" : "Partidos jugados", home.played, away.played], ["Victorias", home.wins, away.wins],
     ["Goles a favor", home.goals_for, away.goals_for], ["Goles en contra", home.goals_against, away.goals_against],
     ["Promedio de goles a favor", home.goals_for_avg, away.goals_for_avg], ["Porterías a cero", home.clean_sheets, away.clean_sheets],
-  ];
-  const teamCard = (team) => {
+  ];  const teamCard = (team) => {
     const logo = safeImage(team.team?.logo);
+    const fallbackLogo = safeImage(team.team?.fallback_logo);
+    const name = String(team.team?.name || "Equipo");
     const form = team.form ? `<div class="comparison-form"><span>Forma reciente</span><b>${escapeHtml(team.form)}</b></div>` : "";
-    return `<div class="comparison-team"><div class="comparison-team-identity">${logo ? `<img src="${logo}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="team-placeholder">${escapeHtml(String(team.team?.name || "?").slice(0,1))}</span>`}<strong>${escapeHtml(team.team?.name || "Equipo")}</strong></div>${form}</div>`;
+    const badge = logo
+      ? `<img class="comparison-team-badge" src="${logo}" data-fallback="${fallbackLogo}" data-initial="${escapeHtml(name.slice(0,1))}" alt="Escudo de ${escapeHtml(name)}" loading="lazy" referrerpolicy="no-referrer">`
+      : `<span class="team-placeholder">${escapeHtml(name.slice(0,1))}</span>`;
+    return `<div class="comparison-team"><div class="comparison-team-identity">${badge}<strong>${escapeHtml(name)}</strong></div>${form}</div>`;
   };
-  const availableStats = stats.filter(([, left, right]) => left != null || right != null);
+  const availableStats = stats;
   const statRows = availableStats.map(([label, left, right]) => {
     const a = Number(left), b = Number(right), max = Math.max(a || 0, b || 0, 1);
     const value = (item) => item == null ? "—" : Number.isInteger(Number(item)) ? String(item) : Number(item).toFixed(2);
     return `<div class="comparison-stat-row"><span>${value(left)}</span><div><strong>${escapeHtml(label)}</strong><i><b style="--comparison-a:${Math.max(a ? 5 : 0, (a || 0) / max * 100)}%"></b><em style="--comparison-b:${Math.max(b ? 5 : 0, (b || 0) / max * 100)}%"></em></i></div><span>${value(right)}</span></div>`;
   }).join("");
-  $("#comparison-results").innerHTML = `<div class="comparison-team-headings">${teamCard(home)}<span class="comparison-vs">VS</span>${teamCard(away)}</div><div class="comparison-stat-list"><div class="comparison-stat-labels"><span>${escapeHtml(home.team?.name || "Equipo 1")}</span><span>Estadística</span><span>${escapeHtml(away.team?.name || "Equipo 2")}</span></div>${statRows}</div><p class="comparison-data-note">Temporada actual · fuente ${escapeHtml(home.source || away.source || "proveedor disponible")}</p>`;
+  const hasStats = stats.some(([, left, right]) => left != null || right != null);
+  const dataNote = recentSample
+    ? `Forma reciente y resultados · ${escapeHtml(home.source)}`
+    : hasStats
+      ? `Temporada actual · fuente ${escapeHtml(home.source || away.source || "proveedor disponible")}`
+    : "La comparación está lista, pero el proveedor no devolvió cifras verificables para esta temporada.";
+  $("#comparison-results").innerHTML = `<div class="comparison-team-headings">${teamCard(home)}<span class="comparison-vs">VS</span>${teamCard(away)}</div><div class="comparison-stat-list"><div class="comparison-stat-labels"><span>${escapeHtml(home.team?.name || "Equipo 1")}</span><span>Estadística</span><span>${escapeHtml(away.team?.name || "Equipo 2")}</span></div>${statRows}</div><p class="comparison-data-note">${dataNote}</p>`;
 }
 async function compareSelectedTeams() {
   const league = LEAGUES.find((item) => item.id === $("#comparison-league").value);
@@ -1192,8 +1331,26 @@ async function compareSelectedTeams() {
   const teamName = (id) => comparisonLeagueTeams.find((team) => team.id === id)?.name || "";
   const query = (id) => api(`/api/football/team-statistics?league=${encodeURIComponent(league.id)}&season=${encodeURIComponent(league.season)}&team=${encodeURIComponent(id)}&team_name=${encodeURIComponent(teamName(id))}`);
   try {
-    const [home, away] = await Promise.all([query(homeId), query(awayId)]);
+    const [homeStats, awayStats] = await Promise.all([query(homeId), query(awayId)]);
     if (token !== comparisonRequestId) return;
+    const attachCatalogBadge = (stats, id) => {
+      const catalogTeam = comparisonLeagueTeams.find((team) => team.id === String(id));
+      const providerLogo = safeImage(stats.team?.logo);
+      const catalogLogo = safeImage(catalogTeam?.badge || catalogTeam?.logo);
+      const team = stats.team || {};
+      return {
+        ...stats,
+        team: {
+          ...team,
+          id: String(id),
+          name: team.name || catalogTeam?.name || teamName(id),
+          logo: providerLogo || catalogLogo,
+          fallback_logo: providerLogo && catalogLogo !== providerLogo ? catalogLogo : "",
+        },
+      };
+    };
+    const home = attachCatalogBadge(homeStats, homeId);
+    const away = attachCatalogBadge(awayStats, awayId);
     renderTeamComparison(home, away);
     $("#comparison-status").textContent = `${league.name} · Temporada ${league.season}`;
   } catch (error) {
@@ -1436,6 +1593,8 @@ document.addEventListener("error", (event) => {
 }, true);
 
 renderLeagues();
+renderConversations();
+lastFixtureContext = restoreFixtureContext(activeConversation()?.matchContext);
 (async () => {
   await loadHealth();
   await loadFootballLeagues();
