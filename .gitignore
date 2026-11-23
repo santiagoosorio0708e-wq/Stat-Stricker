@@ -7,6 +7,11 @@ application-secret.properties
 # --- Persistencia local generada ---
 storage/
 
+# --- Java / Maven ---
+spring-gateway/target/
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
 # --- Python ---
 __pycache__/
 *.py[cod]

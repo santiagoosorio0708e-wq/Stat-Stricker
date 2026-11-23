@@ -14,6 +14,9 @@ __pycache__/
 # Persistencia local (se monta como volumen en runtime)
 storage/
 
+# Artefactos de build Java
+spring-gateway/target/
+
 # Git y editores
 .git/
 .gitignore

@@ -1,13 +1,13 @@
 services:
-  statstriker:
+  ai-engine:
     build:
       context: .
       dockerfile: Dockerfile
-    image: statstriker:latest
-    container_name: statstriker
+    image: statstriker-ai:latest
+    container_name: statstriker-ai
     restart: unless-stopped
-    ports:
-      - "8011:8011"
+    expose:
+      - "8011"
     env_file:
       - .env
     volumes:
@@ -15,6 +15,23 @@ services:
       - ./storage:/app/storage
       # Evita descargar el modelo ONNX (~80 MB) cada vez que recreas el contenedor
       - chroma_cache:/home/appuser/.cache/chroma
+
+  spring-gateway:
+    build:
+      context: .
+      dockerfile: spring-gateway/Dockerfile
+    image: statstriker-gateway:latest
+    container_name: statstriker-gateway
+    restart: unless-stopped
+    depends_on:
+      - ai-engine
+    ports:
+      - "8011:8011"
+    environment:
+      - SERVER_PORT=8011
+      - AI_ENGINE_URL=http://ai-engine:8011
+      - FRONTEND_DIR=file:/app/frontend/
+      - CACHE_WARMER_ENABLED=true
 
 volumes:
   chroma_cache:
