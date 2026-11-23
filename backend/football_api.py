@@ -603,14 +603,28 @@ def team_fixtures(team_id: int, season: int, limit: int = 10) -> list[dict[str, 
     return fixtures or _thesportsdb_team_fixtures(str(team_id))
 
 
+def _resolve_espn_slug(league_id: str) -> str:
+    val = str(league_id or "").strip()
+    if not val:
+        return ""
+    if val in ESPN_SOCCER_LEAGUES:
+        return ESPN_SOCCER_LEAGUES[val]
+    return val if "." in val else ""
+
+
 def recent_team_player_events(
     team_name: str, competition_id: str, season: int, limit: int = 5,
 ) -> list[dict[str, Any]]:
     """Return recent completed matches and verified goal/assist events from ESPN summaries."""
-    league = ESPN_SOCCER_LEAGUES.get(str(competition_id))
+    league = _resolve_espn_slug(competition_id)
     if not league or not team_name.strip():
         return []
     team_id = _espn_team_id(league, team_name)
+    if not team_id:
+        found = _search_espn_team(team_name, preferred_slug=league)
+        if found:
+            team_id = found["id"]
+            league = found["slug"]
     if not team_id:
         return []
     cache_key = f"espn:team-history:{league}:{team_id}:{season}:{limit}"
@@ -1392,7 +1406,8 @@ _PLAYER_QUERY_STOPWORDS = {
     "ultimos", "ultima", "ultimo", "recientes", "reciente", "proximo", "proxima", "hoy", "ayer", "manana",
     "crees", "dime", "quiero", "necesito", "recomienda", "recomiendas", "recomiende", "analiza", "vale",
     "pena", "fijarse", "hace", "dispara", "remata", "tira", "anota", "marca", "mete", "asiste", "juega",
-    "mas", "menos", "over", "under", "btts", "ambos", "marcan", "gana", "ganar", "empate", "victoria",
+    "hara", "metera", "marcara", "anotara", "apuesto", "por", "cual", "mas", "menos", "over", "under", "btts", "ambos", "marcan", "gana", "ganar", "empate", "victoria",
+    "vienen", "viene", "estan", "esta", "juegan", "entre", "contra", "hoy", "sera",
 }
 
 _GENERIC_NAME_TOKENS = {
@@ -1423,7 +1438,7 @@ def _extract_player_candidates(message: str, known_team_names: set[str]) -> list
 
     # 1) Patrones contextuales (funcionan incluso todo en minúsculas)
     patterns = (
-        r"(?:que|si|para|sobre|de|a)\s+([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})\s+(?:dispar\w*|remat\w*|tir\w*|anot\w*|marc\w*|met\w*|asist\w*|jueg\w*|en\s+los)",
+        r"(?:que|si|para|sobre|de|a|y|o|con)\s+([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})\s+(?:dispar\w*|remat\w*|tir\w*|anot\w*|marc\w*|met\w*|har[aá]\w*|hace\w*|asist\w*|jueg\w*|en\s+los)",
         r"(?:tiros?(?:\s+al\s+arco|\s+a\s+puerta)?|remates?|disparos?|goles?|gol|asistencias?|estad[ií]sticas?|promedios?|datos?)\s+(?:de|del|para)\s+([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})",
         r"(?:anota|anotar[aá]|marca|marcar[aá]|dispara|remata|jugador)\s+(?:de\s+)?([a-zñáéíóúü]{3,}(?:\s+[a-zñáéíóúü]{3,}){0,2})",
     )
@@ -1435,6 +1450,91 @@ def _extract_player_candidates(message: str, known_team_names: set[str]) -> list
     # 2) Nombres propios con mayúscula (p. ej. "Ollie Watkins", "Wirtz")
     for m in re.finditer(r"\b([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}(?:\s+[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}){0,2})\b", message):
         add_candidate(m.group(1))
+
+    return candidates[:4]
+
+
+def _search_espn_team(team_query: str, preferred_slug: str = "") -> dict[str, str] | None:
+    """Busca cualquier club del mundo en el buscador público de ESPN."""
+    norm = _plain_text(team_query)
+    if not norm or len(norm) < 3:
+        return None
+    cache_key = f"espn:team-search:{norm}:{preferred_slug}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+    result: dict[str, str] | None = None
+    try:
+        u = "https://site.web.api.espn.com/apis/common/v3/search?" + urlencode(
+            {"query": team_query, "type": "team", "sport": "soccer", "limit": 6}
+        )
+        data = _espn_json(u)
+        candidates = []
+        for item in data.get("items") or []:
+            tid = str(item.get("id") or "").strip()
+            dname = str(item.get("displayName") or "").strip()
+            slug = str(item.get("league") or item.get("defaultLeagueSlug") or "").strip().lower()
+            if not tid or not dname or not slug:
+                continue
+            # Evitamos equipos femeninos, juveniles o amistosos salvo coincidencia exacta
+            if ".w." in slug or "wchampions" in slug or slug in {"club.friendly", "fifa.world", "uefa.nations"}:
+                continue
+            dnorm = _plain_text(dname)
+            if norm not in dnorm and dnorm not in norm and not all(tok in dnorm for tok in norm.split() if len(tok) >= 3):
+                continue
+            score = 0
+            if preferred_slug and slug == preferred_slug:
+                score += 10
+            if dnorm == norm:
+                score += 5
+            if not dnorm.endswith((" b", " ii", " u21", " u19")):
+                score += 3
+            candidates.append((score, tid, dname, slug))
+        if candidates:
+            candidates.sort(key=lambda c: -c[0])
+            _, tid, dname, slug = candidates[0]
+            result = {"id": tid, "name": dname, "slug": slug}
+    except FootballAPIError:
+        pass
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 6 * 60 * 60, result)
+    return result
+
+
+def _extract_team_candidates(message: str, known_tokens: set[str]) -> list[str]:
+    """Extrae nombres de equipos cuando la consulta menciona un partido X vs Y fuera del catálogo fijo."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_chunk(raw: str) -> None:
+        cleaned = _plain_text(raw)
+        tokens = [t for t in cleaned.split() if len(t) >= 3 and t not in _PLAYER_QUERY_STOPWORDS]
+        if not tokens or len(tokens) > 3:
+            return
+        joined = " ".join(tokens)
+        if joined in seen or joined in known_tokens:
+            return
+        seen.add(joined)
+        candidates.append(joined)
+
+    # 1) Patrones explícitos "Equipo A vs/contra Equipo B"
+    m = re.search(
+        r"(?:entre|partido|para|vienen|juegan|de|del|en)?\s*([a-zñáéíóúü0-9.\- ]{3,32}?)\s+(?:vs\.?|contra)\s+([a-zñáéíóúü0-9.\- ]{3,32}?)(?:[?,!.]|$|\s+(?:de|en|para|y|quien|que|hoy|manana))",
+        message.casefold(),
+    )
+    if m:
+        left_tokens = [t for t in _plain_text(m.group(1)).split() if t not in _PLAYER_QUERY_STOPWORDS]
+        right_tokens = [t for t in _plain_text(m.group(2)).split() if t not in _PLAYER_QUERY_STOPWORDS]
+        if left_tokens:
+            add_chunk(" ".join(left_tokens[-2:]))
+        if right_tokens:
+            add_chunk(" ".join(right_tokens[:2]))
+
+    # 2) Nombres propios capitalizados que podrían ser clubes (p. ej. "Millonarios", "Benfica")
+    for cap in re.finditer(r"\b([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}(?:\s+[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}){0,2})\b", message):
+        add_chunk(cap.group(1))
 
     return candidates[:4]
 
@@ -1473,8 +1573,8 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
             dnorm = _plain_text(dname)
             if norm not in dnorm and not all(tok in dnorm for tok in norm.split()):
                 continue
-            slug = str(item.get("league") or "")
-            lid = _ESPN_SLUG_TO_LEAGUE_ID.get(slug, "")
+            slug = str(item.get("league") or "").strip().lower()
+            lid = _ESPN_SLUG_TO_LEAGUE_ID.get(slug, "") or (slug if slug and "." in slug and slug not in {"fifa.world", "uefa.nations"} else "")
             teams = [(tr.get("core") or {}).get("displayName") for tr in (item.get("teamRelationships") or [])]
             team_name = next((str(t) for t in teams if t), "")
             if lid and team_name:
@@ -1507,6 +1607,10 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
                 if mapped:
                     result = {"player": pname, "team": mapped[0], "league_id": mapped[1]}
                     break
+                espn_club = _search_espn_team(tname)
+                if espn_club:
+                    result = {"player": pname, "team": espn_club["name"], "league_id": espn_club["slug"]}
+                    break
         except Exception:
             pass
 
@@ -1522,7 +1626,12 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
                 if mapped:
                     result = {"player": espn_display or player_query.title(), "team": mapped[0], "league_id": mapped[1]}
                 else:
-                    result = {"player": espn_display or player_query.title(), "team": tname, "league_id": "39"}
+                    espn_club = _search_espn_team(tname)
+                    result = {
+                        "player": espn_display or player_query.title(),
+                        "team": espn_club["name"] if espn_club else tname,
+                        "league_id": espn_club["slug"] if espn_club else "39",
+                    }
         except FootballAPIError:
             pass
 
@@ -1575,6 +1684,9 @@ def resolve_entities_in_text(
     for alias, (canonical, league_id) in index.items():
         if len(alias) < 3:
             continue
+        # Evita confundir la palabra española "cómo/como" con el club italiano "Como" salvo mayúscula explícita.
+        if alias == "como" and not re.search(r"\bComo\b", text):
+            continue
         m = re.search(rf"\b{re.escape(alias)}\b", query)
         if m:
             matches.append((m.start(), -len(alias), canonical, league_id))
@@ -1609,12 +1721,27 @@ def resolve_entities_in_text(
                 if len(resolved) < 2:
                     add_team(found["team"], found["league_id"])
 
+    # Búsqueda dinámica global de equipos fuera del catálogo fijo (p. ej. Liga BetPlay, Portugal, Eredivisie...)
+    if len(resolved) < 2:
+        known_tokens = set(seen_names)
+        for t in resolved:
+            known_tokens.update(_plain_text(t["name"]).split())
+        for pn in player_names:
+            known_tokens.update(_plain_text(pn).split())
+        team_candidates = _extract_team_candidates(text, known_tokens)
+        if team_candidates:
+            with ThreadPoolExecutor(max_workers=min(3, len(team_candidates))) as pool:
+                found_teams = list(pool.map(_search_espn_team, team_candidates))
+            for ft in found_teams:
+                if ft and len(resolved) < 2:
+                    add_team(ft["name"], ft["slug"])
+
     return resolved[:2], player_names
 
 
 def _espn_team_recent_matches(league_id: str, team_name: str, season: int, limit: int = 5) -> list[dict[str, Any]]:
     """Devuelve los últimos `limit` partidos completados del equipo desde ESPN."""
-    league = ESPN_SOCCER_LEAGUES.get(str(league_id))
+    league = _resolve_espn_slug(league_id)
     if not league or not team_name.strip():
         return []
     espn_team_id = _espn_team_id(league, team_name)
@@ -1624,6 +1751,11 @@ def _espn_team_recent_matches(league_id: str, team_name: str, season: int, limit
             if espn_team_id:
                 league = alt
                 break
+    if not espn_team_id:
+        found = _search_espn_team(team_name, preferred_slug=league)
+        if found:
+            espn_team_id = found["id"]
+            league = found["slug"]
     if not espn_team_id:
         return []
 
@@ -1814,7 +1946,7 @@ def team_last5_report(
     return {
         "team": team_name,
         "league_id": used_league,
-        "league_name": FEATURED_COMPETITIONS.get(str(used_league), "Fútbol"),
+        "league_name": FEATURED_COMPETITIONS.get(str(used_league), str(used_league) or "Fútbol"),
         "source": f"ESPN · últimos {played} partidos",
         "matches": matches,
         "averages": {

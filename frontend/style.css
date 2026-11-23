@@ -531,15 +531,28 @@ main#inicio{width:100%;max-width:none}
 
 .live-simulation{margin:16px 0;padding:13px;border:1px solid #42d7a333;border-radius:12px;background:linear-gradient(145deg,#102c29,#101e27)}.simulation-heading{display:flex;justify-content:space-between;align-items:center;gap:8px}.simulation-heading>div{display:grid;gap:3px}.simulation-heading strong{font-size:12px;color:#dff7ec}.simulation-heading small{font-size:9px;color:#89aaa0}.simulation-clock{padding:4px 7px;border:1px solid #3bd49a44;border-radius:999px;color:#5ee2ae;font-size:10px;font-weight:700}.simulation-score{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:8px;margin:13px 0 11px;text-align:center}.simulation-score span{overflow:hidden;color:#c7dad2;font-size:10px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}.simulation-score strong{color:#f3fff9;font-family:"Space Grotesk",sans-serif;font-size:22px}.simulation-timeline{display:grid;grid-template-columns:25px minmax(0,1fr) 25px;align-items:center;gap:7px;color:#87a69b;font-size:9px}.simulation-timeline>span:last-child{text-align:right}.simulation-track{position:relative;height:8px;border-radius:999px;background:#ffffff1a}.simulation-track>i{position:absolute;inset:0 auto 0 0;border-radius:inherit;background:linear-gradient(90deg,#00bc84,#3ae3aa)}.simulation-track>b{position:absolute;top:50%;width:12px;height:12px;border:3px solid #c4ffe4;border-radius:50%;background:#06bd85;box-shadow:0 0 0 4px #24d99a28;transform:translate(-50%,-50%)}.simulation-event{position:absolute;z-index:1;top:-15px;color:#d7f9e8;font-size:10px;transform:translateX(-50%)}.simulation-event.goal{color:#4ee0a4}.simulation-event.card{color:#ffd16c}.simulation-events{display:grid;gap:6px;margin:13px 0 0;padding:0;list-style:none}.simulation-events li{display:grid;grid-template-columns:30px 1fr;gap:7px;color:#b7ccc3;font-size:9px;line-height:1.4}.simulation-events time{color:#57dda8;font-weight:700}.simulation-events .simulation-no-events{display:block;color:#829c91}.live-simulation>p{margin-top:10px;color:#829b91;font-size:8px;line-height:1.45}
 
-/* Adjuntar y analizar foto de apuesta en el chat */
-.composer{flex-direction:column!important;align-items:stretch!important;gap:8px!important}
-.composer-row{display:flex;align-items:flex-end;gap:10px;width:100%}
-.composer-row textarea{flex:1;min-width:0}
-.attach-button{flex:none;display:grid;place-items:center;width:38px;height:38px;border:1px solid #00e47944;border-radius:9px;background:#103329;color:#b7ffdd;font:inherit;font-size:21px;font-weight:700;line-height:1;cursor:pointer;transition:background .16s ease,border-color .16s ease}
-.attach-button:hover{background:#184d3d;border-color:#00e47988}
+/* Adjuntar y analizar foto de apuesta en el chat (estilo barra pill limpia) */
+.composer{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:8px!important;padding:6px 10px 6px 12px!important;border:1px solid #ffffff1a!important;border-radius:28px!important;background:#161d24!important;box-shadow:0 8px 26px #00000044}
+.composer:focus-within{border-color:#3b82f688!important;box-shadow:0 0 0 3px #3b82f618!important}
+.composer-row{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:center!important;gap:8px!important;width:100%!important;min-height:42px}
+.composer-row textarea{flex:1 1 auto!important;min-width:0!important;width:auto!important;height:36px;min-height:36px;max-height:120px;padding:7px 4px!important;border:0!important;outline:0!important;background:transparent!important;resize:none;overflow-y:hidden;line-height:1.45;font-size:15px!important;color:#e9f6f2}
+.attach-button{position:relative;flex:0 0 auto!important;display:grid;place-items:center;width:36px!important;height:36px!important;padding:0!important;border:0!important;border-radius:50%!important;background:transparent!important;color:#d0dde6;cursor:pointer;transition:background .16s ease,color .16s ease}
+.attach-button:hover{background:#ffffff12!important;color:#ffffff}
+.attach-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:#3b82f6;box-shadow:0 0 6px #3b82f6aa;pointer-events:none}
+.attach-button.has-attachment .attach-dot{background:#00e479;box-shadow:0 0 8px #00e479cc}
+.composer-mode{position:relative;flex:0 0 auto!important;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 10px;border-radius:999px;background:transparent;color:#d6e3ec;font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer;transition:background .16s ease}
+.composer-mode:hover{background:#ffffff0e}
+.composer-mode-dot{width:7px;height:7px;border-radius:50%;background:#3b82f6;flex:none}
+.composer-mode select{appearance:none;-webkit-appearance:none;-moz-appearance:none;width:auto;border:0!important;outline:0!important;background:transparent!important;color:#e3edf5!important;font:inherit;font-size:13px;font-weight:600;padding:0 2px 0 0;cursor:pointer}
+.composer-mode select option{background:#121b22;color:#e8f2f0}
+.composer-mode-caret{flex:none;color:#9fb2bf;pointer-events:none}
+.composer .send-button{flex:0 0 auto!important;display:grid;place-items:center;width:36px!important;height:36px!important;padding:0!important;border:0!important;border-radius:50%!important;background:transparent!important;color:#c9d8e2!important;cursor:pointer;transition:background .16s ease,color .16s ease}
+.composer .send-button svg{width:17px!important;height:17px!important}
+.composer .send-button:hover,.composer.has-content .send-button{background:#00e479!important;color:#032613!important}
 .composer-attachment[hidden]{display:none!important}
-.composer-attachment{display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid #00e47933;border-radius:9px;background:#0e2420}
-.composer-attachment img{width:42px;height:42px;border-radius:6px;object-fit:cover;border:1px solid #ffffff1a}
+.composer-attachment{display:flex;align-items:center;gap:10px;padding:6px 12px;border:1px solid #00e47933;border-radius:16px;background:#0e2420}
+.composer-attachment img{width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid #ffffff1a}
 .composer-attachment span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#c7e8d9}
 .composer-attachment-remove{border:0;background:transparent;color:#fca5a5;font-size:14px;font-weight:700;cursor:pointer;padding:4px 6px}
 .msg__image{display:block;max-width:260px;max-height:220px;width:auto;height:auto;border-radius:10px;margin-bottom:8px;border:1px solid #ffffff1f;object-fit:contain}
+@media(max-width:520px){.composer-mode{padding:0 6px;font-size:12px}.composer-mode select{font-size:12px}}

@@ -34,6 +34,7 @@ class LLMClient(ABC):
         image_b64: str | None = None,
         image_mime_type: str | None = None,
         max_output_tokens: int | None = None,
+        use_web_search: bool = False,
     ) -> str:
         """Envía el system prompt + prompt de usuario (y foto opcional) y devuelve texto."""
 
@@ -49,11 +50,12 @@ class GeminiClient(LLMClient):
         from google.genai import types
 
         http_options = types.HttpOptions(
-            timeout=25000,
+            timeout=15000,
             retry_options=types.HttpRetryOptions(attempts=1),
         )
         self._client = genai.Client(api_key=api_key, http_options=http_options)
-        self.model = model
+        # gemini-3.8-flash suele tardar >30s o devolver 503; priorizamos el modelo más ágil.
+        self.model = "gemini-3.5-flash-lite" if model == "gemini-3.8-flash" else model
         self._max_tokens = max_output_tokens
 
     def generate(
@@ -63,6 +65,7 @@ class GeminiClient(LLMClient):
         image_b64: str | None = None,
         image_mime_type: str | None = None,
         max_output_tokens: int | None = None,
+        use_web_search: bool = False,
     ) -> str:
         candidates = [self.model] + [m for m in self._FALLBACK_MODELS if m != self.model]
         payload_input: str | list[dict[str, str]] = (
@@ -76,30 +79,39 @@ class GeminiClient(LLMClient):
         tokens = max_output_tokens or self._max_tokens
         last_exc: Exception | None = None
         for candidate in candidates:
-            try:
-                interaction = self._client.interactions.create(
-                    model=candidate,
-                    system_instruction=system_prompt,
-                    input=payload_input,
-                    generation_config={"max_output_tokens": tokens},
-                    store=False,
-                )
-                # Promovemos el modelo que respondió para evitar reintentos en turnos siguientes.
-                self.model = candidate
-                return (interaction.output_text or "").strip()
-            except Exception as exc:  # errores de red, cuota, clave inválida...
-                last_exc = exc
-                detail = str(exc).casefold()
-                temporary = any(
-                    token in detail
-                    for token in (
-                        "503", "429", "500", "502", "504",
-                        "service_unavailable", "high demand", "rate limit",
-                        "timed out", "timeout", "unavailable",
+            # Si use_web_search está activo, intentamos con google_search y si la cuota/plan
+            # devuelve 429 o error de herramienta, reintentamos al instante sin tools.
+            tool_modes = ([{"type": "google_search"}], None) if use_web_search and not image_b64 else (None,)
+            for tools in tool_modes:
+                try:
+                    kwargs: dict[str, object] = {
+                        "model": candidate,
+                        "system_instruction": system_prompt,
+                        "input": payload_input,
+                        "generation_config": {"max_output_tokens": tokens},
+                        "store": False,
+                    }
+                    if tools:
+                        kwargs["tools"] = tools
+                    interaction = self._client.interactions.create(**kwargs)
+                    self.model = candidate
+                    return (interaction.output_text or "").strip()
+                except Exception as exc:
+                    last_exc = exc
+                    detail = str(exc).casefold()
+                    if tools is not None and any(tok in detail for tok in ("429", "quota", "too_many_requests", "tool")):
+                        continue
+                    temporary = any(
+                        token in detail
+                        for token in (
+                            "503", "429", "500", "502", "504",
+                            "service_unavailable", "high demand", "rate limit",
+                            "timed out", "timeout", "unavailable",
+                        )
                     )
-                )
-                if not temporary:
-                    raise LLMError(f"Error al llamar a Gemini ({candidate}): {exc}") from exc
+                    if not temporary:
+                        raise LLMError(f"Error al llamar a Gemini ({candidate}): {exc}") from exc
+                    break
         raise LLMError(f"Error al llamar a Gemini: {last_exc}") from last_exc
 
 
@@ -122,6 +134,7 @@ class OpenAIClient(LLMClient):
         image_b64: str | None = None,
         image_mime_type: str | None = None,
         max_output_tokens: int | None = None,
+        use_web_search: bool = False,
     ) -> str:
         user_content: str | list[dict[str, object]] = (
             [
@@ -165,6 +178,7 @@ class MockClient(LLMClient):
         image_b64: str | None = None,
         image_mime_type: str | None = None,
         max_output_tokens: int | None = None,
+        use_web_search: bool = False,
     ) -> str:
         modules = [line[3:] for line in system_prompt.splitlines() if line.startswith("## ")]
         context = (

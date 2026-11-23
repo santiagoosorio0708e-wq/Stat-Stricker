@@ -83,11 +83,11 @@ MARKET_LABELS: dict[str, str] = {
 
 RE_PARLAY = re.compile(r"combinada|parlay|acumulada|combinar")
 RE_PLAYER = re.compile(
-    r"\b(jugador|jugadores|goleador|anota\w*|marcar[aá]|asistencia|asistencias|"
-    r"tiros?|remat\w*|dispar\w*|al arco|a puerta|prop(?:s)?|"
+    r"\b(jugador|jugadores|goleador|anota\w*|marcar[aá]|har[aá]\s+(?:un\s+)?gol|mete\w*\s+(?:un\s+)?gol|"
+    r"gol\s+de\s+|asistencia|asistencias|tiros?|remat\w*|dispar\w*|al arco|a puerta|prop(?:s)?|"
     r"mbappe|kylian|vinicius|bellingham|yamal|lamine|lewandowski|raphinha|pedri|"
     r"haaland|foden|salah|palmer|saka|kane|musiala|lautaro|dembele|messi|griezmann|"
-    r"rodrygo|valverde|alvarez|wirtz|gyokeres|watkins|fernandes|luis diaz|nico williams)\b"
+    r"rodrygo|valverde|alvarez|wirtz|gyokeres|watkins|fernandes|luis diaz|nico williams|igor thiago)\b"
 )
 RE_VALUE_ODDS = re.compile(
     r"cuota (?:realmente )?(?:buena|alta|atractiva|jugosa|rentable)|mejor cuota|"
@@ -272,17 +272,18 @@ CONTEXT_MODULES: dict[str, str] = {
 El contexto recuperado es relevante. Basa todo el análisis en él.""",
     "low": """\
 ## CALIDAD DEL CONTEXTO: PARCIAL
-No se identificó con claridad ningún partido de la base de conocimiento en la consulta.
-- Si el usuario pregunta por un equipo o partido que NO aparece en el contexto, responde que
-  no dispones de datos sobre él y NO lo analices.
-- Si la consulta es genérica y el contexto sí es pertinente, responde con prudencia,
-  indica qué datos faltan y evita recomendaciones de stake altas.""",
+Si dispones de búsqueda web (`google_search`), úsala para completar los datos recientes del partido o jugador.
+- Si tras buscar sigues sin tener cifras verificadas de un partido concreto, no inventes resultados:
+  aclara qué dato falta y aun así ofrece un análisis útil con criterios objetivos de mercado,
+  cuota mínima justa estimada y gestión del stake prudente.""",
     "none": """\
-## CALIDAD DEL CONTEXTO: SIN DATOS
-No se recuperaron estadísticas de ese partido o equipo concreto en la base vectorial ni en la fuente en vivo.
-NO inventes números ni resultados de partidos. Explica brevemente qué dato falta y sugiere indicar
-los nombres completos de los equipos (p. ej. "Arsenal vs Chelsea", "Real Madrid vs Barcelona" o un jugador)
-para consultar sus últimos 5 partidos. Ignora el formato estándar.""",
+## CALIDAD DEL CONTEXTO: SIN DATOS LOCALES
+No se encontraron registros de ese partido o equipo en la base local ni en el catálogo directo de ligas.
+- Si tienes habilitada la herramienta `google_search`, úsala para investigar los últimos 5 partidos,
+  promedios de goles/tiros, lesiones y cuotas del partido o jugador consultado y arma tu tabla y recomendación con lo encontrado.
+- Si no logras obtener cifras verificadas en vivo, NO inventes marcadores ni porcentajes: explica qué falta,
+  indica cómo evaluar objetivamente esa apuesta (mercados adecuados, rango de cuota con valor y riesgos)
+  y pide al usuario confirmar el nombre exacto de los equipos si hubiera ambigüedad.""",
 }
 
 

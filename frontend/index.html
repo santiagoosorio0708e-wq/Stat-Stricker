@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=3" />
 </head>
 <body class="dashboard">
   <div class="app-shell">
@@ -85,8 +85,21 @@
             <button class="composer-attachment-remove" id="composer-attachment-remove" type="button" aria-label="Quitar foto">✕</button>
           </div>
           <div class="composer-row">
-            <button class="attach-button" id="btn-attach" type="button" title="Subir foto o captura de tu apuesta" aria-label="Subir foto de apuesta">＋</button>
-            <textarea id="input" rows="1" maxlength="1000" placeholder="Escribe tu propuesta de apuesta o sube una foto con +…"></textarea>
+            <button class="attach-button" id="btn-attach" type="button" title="Subir foto o captura de tu apuesta" aria-label="Subir foto de apuesta">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+              <i class="attach-dot" aria-hidden="true"></i>
+            </button>
+            <textarea id="input" rows="1" maxlength="1000" placeholder="Pregunta a StatStriker o sube tu apuesta…"></textarea>
+            <label class="composer-mode" title="Modo de recomendación">
+              <i class="composer-mode-dot" aria-hidden="true"></i>
+              <select id="risk-mode-select" aria-label="Modo de análisis">
+                <option value="">Moderado</option>
+                <option value="cuota realmente buena y objetiva">Objetivo</option>
+                <option value="perfil conservador">Conservador</option>
+                <option value="perfil agresivo">Agresivo</option>
+              </select>
+              <svg class="composer-mode-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </label>
             <button class="send-button" id="btn-send" type="submit" aria-label="Enviar análisis"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 9-18 9 3-8 9-1-9-1-3-8Z"/></svg></button>
           </div>
         </form>
@@ -255,6 +268,6 @@
       <button class="mobile-nav-item" type="button" data-view="advanced" aria-label="Métricas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 3 3 6-7m-4 0h4v4"/></svg><span>Métricas</span></button>
     </nav>
   </div>
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

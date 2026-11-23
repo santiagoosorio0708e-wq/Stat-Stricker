@@ -298,6 +298,7 @@ def _generate_with_fallback(
     image_b64: str | None = None,
     image_mime_type: str | None = None,
     max_output_tokens: int | None = None,
+    use_web_search: bool = False,
 ) -> tuple[str, LLMClient]:
     primary: LLMClient | None = request.app.state.llm
     fallback: LLMClient | None = request.app.state.llm_fallback
@@ -307,6 +308,7 @@ def _generate_with_fallback(
                 return fallback.generate(
                     system_prompt, user_prompt, image_b64=image_b64,
                     image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+                    use_web_search=use_web_search,
                 ), fallback
             except LLMError as exc:
                 raise HTTPException(status_code=503, detail=_llm_error_message(exc)) from exc
@@ -315,6 +317,7 @@ def _generate_with_fallback(
         return primary.generate(
             system_prompt, user_prompt, image_b64=image_b64,
             image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+            use_web_search=use_web_search,
         ), primary
     except LLMError as exc:
         logger.warning("Falló el proveedor LLM principal (%s)", primary.provider)
@@ -323,6 +326,7 @@ def _generate_with_fallback(
                 return fallback.generate(
                     system_prompt, user_prompt, image_b64=image_b64,
                     image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+                    use_web_search=use_web_search,
                 ), fallback
             except LLMError:
                 logger.warning("También falló el proveedor LLM de respaldo (%s)", fallback.provider)
@@ -361,7 +365,12 @@ def _extract_bet_slip_entities(request: Request, image: ChatImageAttachment) -> 
 def _is_schedule_question(message: str) -> bool:
     text = message.casefold()
     asks_time = bool(re.search(r"\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio|kick.?off|schedule)\b", text))
-    asks_analysis = bool(re.search(r"\b(apuesta|apostar|recomiend|estad[ií]stic|promedio|tabla|goles|btts|ambos|cuota|gana|jugador|analiz)\b", text))
+    asks_analysis = bool(
+        re.search(
+            r"\b(apuest\w*|recomiend\w*|estad[ií]stic\w*|promedio\w*|tabla\w*|gol(?:es)?|btts|ambos|cuota\w*|gana\w*|jugador\w*|analiz\w*|datos disponibles)\b",
+            text,
+        )
+    )
     return asks_time and not asks_analysis
 
 
@@ -828,7 +837,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         )
     logger.info("Reglas activas: %s | fragmentos: %d | reportes_5p: %d", active_rules, len(chunks), len(live_reports))
 
-    # 6) Llamada al LLM (con respaldo local estructurado si todos los modelos fallan)
+    # 6) Llamada al LLM (con búsqueda web si falta contexto local + respaldo estructurado)
     try:
         answer, used_llm = _generate_with_fallback(
             request,
@@ -836,6 +845,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             user_prompt,
             image_b64=payload.image.data if payload.image else None,
             image_mime_type=payload.image.mime_type if payload.image else None,
+            use_web_search=(context_quality != "good"),
         )
         provider = f"{used_llm.provider}:{used_llm.model}"
     except HTTPException as exc:

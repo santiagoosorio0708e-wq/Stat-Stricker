@@ -534,12 +534,18 @@ async function findNextFixtureForMessage(message) {
   } catch { return null; }
 }
 let pendingAttachment = null;
+function updateComposerState() {
+  const hasContent = Boolean(els.input.value.trim() || pendingAttachment);
+  els.form?.classList.toggle("has-content", hasContent);
+  $("#btn-attach")?.classList.toggle("has-attachment", Boolean(pendingAttachment));
+}
 function clearAttachment() {
   pendingAttachment = null;
   const box = $("#composer-attachment"), img = $("#composer-attachment-img"), input = $("#bet-image-input");
   if (box) box.hidden = true;
   if (img) img.removeAttribute("src");
   if (input) input.value = "";
+  updateComposerState();
 }
 function attachBetImage(file) {
   if (!file || !file.type.startsWith("image/")) return;
@@ -560,6 +566,7 @@ function attachBetImage(file) {
     if (img) img.src = dataUrl;
     if (nameEl) nameEl.textContent = pendingAttachment.name;
     if (box) box.hidden = false;
+    updateComposerState();
     URL.revokeObjectURL(objectUrl);
     els.input.focus();
   };
@@ -567,24 +574,30 @@ function attachBetImage(file) {
   image.src = objectUrl;
 }
 async function sendMessage(text, { retry = false } = {}) {
-  const message = text.trim();
+  const rawMessage = text.trim();
+  const modeHint = $("#risk-mode-select")?.value || "";
   const attachment = retry ? null : pendingAttachment;
+  const message = rawMessage
+    ? (modeHint ? `${rawMessage} (${modeHint})` : rawMessage)
+    : (attachment && modeHint ? `Analiza esta foto de mi apuesta (${modeHint})` : "");
   const requestSessionId = sessionId;
-  if ((!message && !attachment) || pendingChats.has(requestSessionId)) return;
+  if ((!rawMessage && !attachment) || pendingChats.has(requestSessionId)) return;
   const normalizedMessage = normalizeMention(message);
   const asksSchedule = /\b(cuando|que dia|a que hora|fecha|horario|hora de inicio)\b/.test(normalizedMessage);
   pendingChats.add(requestSessionId); els.send.disabled = true;
   if (!retry) {
     els.input.value = ""; autoResize(); clearAttachment();
-    addUserMessage(message || "Analiza esta foto de mi apuesta", attachment?.previewUrl || "");
-    setConversationTitle(message || "Foto de apuesta");
+    addUserMessage(rawMessage || "Analiza esta foto de mi apuesta", attachment?.previewUrl || "");
+    setConversationTitle(rawMessage || "Foto de apuesta");
   }
   const typing = addTyping();
   try {
     let matchContext = message ? findMentionedFixture(message) : null;
     const needsFixtureLookup = /\b(cuando|que dia|a que hora|fecha|horario|proxim[oa]? partido|analiza (?:el )?partido|partido de|vs|contra)\b/.test(normalizedMessage);
     if (!matchContext && needsFixtureLookup) matchContext = await findNextFixtureForMessage(message);
-    if (!matchContext && asksSchedule) matchContext = activeConversation()?.matchContext || lastFixtureContext;
+    if (!matchContext && !/\b(vs|contra)\b/.test(normalizedMessage)) {
+      matchContext = activeConversation()?.matchContext || lastFixtureContext;
+    }
     if (matchContext) {
       lastFixtureContext = matchContext;
       const conversation = conversations.find((item) => item.id === requestSessionId);
@@ -592,7 +605,7 @@ async function sendMessage(text, { retry = false } = {}) {
     }
     const data = await api("/api/chat", {
       method: "POST",
-      signal: AbortSignal.timeout(attachment ? 45000 : 35000),
+      signal: AbortSignal.timeout(attachment ? 55000 : 45000),
       body: JSON.stringify({
         message,
         session_id: requestSessionId,
@@ -619,7 +632,13 @@ els.messages.addEventListener("click", (event) => {
   const retryButton = event.target.closest("[data-retry-message]");
   if (retryButton) sendMessage(retryButton.dataset.retryMessage, { retry: true });
 });
-function autoResize() { els.input.style.height = "auto"; els.input.style.height = `${Math.min(els.input.scrollHeight, 120)}px`; }
+function autoResize() {
+  els.input.style.height = "36px";
+  const next = Math.min(Math.max(els.input.scrollHeight, 36), 120);
+  els.input.style.height = `${next}px`;
+  els.input.style.overflowY = els.input.scrollHeight > 120 ? "auto" : "hidden";
+  updateComposerState();
+}
 
 els.form.addEventListener("submit", (event) => { event.preventDefault(); sendMessage(els.input.value); });
 $("#btn-attach")?.addEventListener("click", () => $("#bet-image-input")?.click());
