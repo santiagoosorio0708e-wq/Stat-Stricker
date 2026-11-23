@@ -78,8 +78,17 @@
           </div>
         </div>
         <form class="composer" id="composer" autocomplete="off">
-          <textarea id="input" rows="1" maxlength="1000" placeholder="Escribe tu propuesta de apuesta…" required></textarea>
-          <button class="send-button" id="btn-send" type="submit" aria-label="Enviar análisis"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 9-18 9 3-8 9-1-9-1-3-8Z"/></svg></button>
+          <input id="bet-image-input" type="file" accept="image/*" hidden />
+          <div class="composer-attachment" id="composer-attachment" hidden>
+            <img id="composer-attachment-img" alt="Vista previa de la apuesta" />
+            <span id="composer-attachment-name"></span>
+            <button class="composer-attachment-remove" id="composer-attachment-remove" type="button" aria-label="Quitar foto">✕</button>
+          </div>
+          <div class="composer-row">
+            <button class="attach-button" id="btn-attach" type="button" title="Subir foto o captura de tu apuesta" aria-label="Subir foto de apuesta">＋</button>
+            <textarea id="input" rows="1" maxlength="1000" placeholder="Escribe tu propuesta de apuesta o sube una foto con +…"></textarea>
+            <button class="send-button" id="btn-send" type="submit" aria-label="Enviar análisis"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 9-18 9 3-8 9-1-9-1-3-8Z"/></svg></button>
+          </div>
         </form>
         <p class="responsible-note">+18 · Juega con responsabilidad. Los análisis son probabilísticos y no garantizan resultados.</p>
       </section>

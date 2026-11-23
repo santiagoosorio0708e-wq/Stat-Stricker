@@ -1,0 +1,20 @@
+services:
+  statstriker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: statstriker:latest
+    container_name: statstriker
+    restart: unless-stopped
+    ports:
+      - "8011:8011"
+    env_file:
+      - .env
+    volumes:
+      # Persiste SQLite (statstriker.db) y ChromaDB (chroma_db/) en el host
+      - ./storage:/app/storage
+      # Evita descargar el modelo ONNX (~80 MB) cada vez que recreas el contenedor
+      - chroma_cache:/home/appuser/.cache/chroma
+
+volumes:
+  chroma_cache:

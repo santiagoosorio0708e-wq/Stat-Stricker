@@ -90,7 +90,7 @@ const RULE_LABELS = {
   perfil_agresivo: ["🔥 Agresivo", "red"], kelly: ["🧮 Kelly", ""], mercado_1x2: ["1X2", "green"],
   mercado_doble_oportunidad: ["Doble oportunidad", "green"], mercado_over_under: ["Over/Under", "green"],
   mercado_btts: ["BTTS", "green"], mercado_handicap: ["Hándicap", "green"], mercado_corners: ["Córners", "green"],
-  mercado_tarjetas: ["Tarjetas", "green"], ultimos_5_partidos: ["📊 Últimos 5P", "green"], estadisticas_jugador: ["🏃 Jugador", "green"], valor_cuota_objetiva: ["💎 Cuota objetiva", "yellow"],
+  mercado_tarjetas: ["Tarjetas", "green"], ultimos_5_partidos: ["📊 Últimos 5P", "green"], estadisticas_jugador: ["🏃 Jugador", "green"], valor_cuota_objetiva: ["💎 Cuota objetiva", "yellow"], analisis_foto_apuesta: ["📸 Foto de apuesta", "yellow"],
 };
 let selectedLeague = LEAGUES[0];
 let catalog = {};
@@ -182,9 +182,11 @@ function renderMarkdown(markdown) {
 }
 function scrollToBottom() { els.messages.scrollTop = els.messages.scrollHeight; }
 function ruleTag(rule) { const [label, color] = RULE_LABELS[rule] || [rule, ""]; return `<span class="tag ${color ? `tag--${color}` : ""}">${escapeHtml(label)}</span>`; }
-function addUserMessage(text) {
+function addUserMessage(text, imageUrl = "") {
   const article = document.createElement("article"); article.className = "msg msg--user";
-  article.innerHTML = `<div class="msg__avatar">T</div><div class="msg__bubble"><p>${escapeHtml(text)}</p></div>`;
+  const imgHtml = imageUrl ? `<img class="msg__image" src="${escapeHtml(imageUrl)}" alt="Foto de apuesta adjunta">` : "";
+  const textHtml = text ? `<p>${escapeHtml(text)}</p>` : "";
+  article.innerHTML = `<div class="msg__avatar">T</div><div class="msg__bubble">${imgHtml}${textHtml}</div>`;
   els.messages.appendChild(article); scrollToBottom();
 }
 function addTyping() {
@@ -531,17 +533,55 @@ async function findNextFixtureForMessage(message) {
     return fixtures.find((fixture) => ["NS", "TBD", "PST", "UPCOMING"].includes(fixture.status.toUpperCase())) || fixtures[0] || null;
   } catch { return null; }
 }
+let pendingAttachment = null;
+function clearAttachment() {
+  pendingAttachment = null;
+  const box = $("#composer-attachment"), img = $("#composer-attachment-img"), input = $("#bet-image-input");
+  if (box) box.hidden = true;
+  if (img) img.removeAttribute("src");
+  if (input) input.value = "";
+}
+function attachBetImage(file) {
+  if (!file || !file.type.startsWith("image/")) return;
+  const objectUrl = URL.createObjectURL(file), image = new Image();
+  image.onload = () => {
+    const max = 1400, scale = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
+    const [, base64] = dataUrl.split(",");
+    pendingAttachment = { data: base64, mime_type: "image/jpeg", previewUrl: dataUrl, name: file.name || "apuesta.jpg" };
+    const box = $("#composer-attachment"), img = $("#composer-attachment-img"), nameEl = $("#composer-attachment-name");
+    if (img) img.src = dataUrl;
+    if (nameEl) nameEl.textContent = pendingAttachment.name;
+    if (box) box.hidden = false;
+    URL.revokeObjectURL(objectUrl);
+    els.input.focus();
+  };
+  image.onerror = () => URL.revokeObjectURL(objectUrl);
+  image.src = objectUrl;
+}
 async function sendMessage(text, { retry = false } = {}) {
   const message = text.trim();
+  const attachment = retry ? null : pendingAttachment;
   const requestSessionId = sessionId;
-  if (!message || pendingChats.has(requestSessionId)) return;
+  if ((!message && !attachment) || pendingChats.has(requestSessionId)) return;
   const normalizedMessage = normalizeMention(message);
   const asksSchedule = /\b(cuando|que dia|a que hora|fecha|horario|hora de inicio)\b/.test(normalizedMessage);
   pendingChats.add(requestSessionId); els.send.disabled = true;
-  if (!retry) { els.input.value = ""; autoResize(); addUserMessage(message); setConversationTitle(message); }
+  if (!retry) {
+    els.input.value = ""; autoResize(); clearAttachment();
+    addUserMessage(message || "Analiza esta foto de mi apuesta", attachment?.previewUrl || "");
+    setConversationTitle(message || "Foto de apuesta");
+  }
   const typing = addTyping();
   try {
-    let matchContext = findMentionedFixture(message);
+    let matchContext = message ? findMentionedFixture(message) : null;
     const needsFixtureLookup = /\b(cuando|que dia|a que hora|fecha|horario|proxim[oa]? partido|analiza (?:el )?partido|partido de|vs|contra)\b/.test(normalizedMessage);
     if (!matchContext && needsFixtureLookup) matchContext = await findNextFixtureForMessage(message);
     if (!matchContext && asksSchedule) matchContext = activeConversation()?.matchContext || lastFixtureContext;
@@ -552,10 +592,11 @@ async function sendMessage(text, { retry = false } = {}) {
     }
     const data = await api("/api/chat", {
       method: "POST",
-      signal: AbortSignal.timeout(35000),
+      signal: AbortSignal.timeout(attachment ? 45000 : 35000),
       body: JSON.stringify({
         message,
         session_id: requestSessionId,
+        image: attachment ? { data: attachment.data, mime_type: attachment.mime_type } : null,
         match_context: matchContext ? {
           id: matchContext.id, home: matchContext.home, away: matchContext.away,
           home_logo: matchContext.homeLogo, away_logo: matchContext.awayLogo,
@@ -568,7 +609,7 @@ async function sendMessage(text, { retry = false } = {}) {
     typing.remove(); if (sessionId === requestSessionId) addBotMessage(data, { fixture: matchContext });
   } catch (error) {
     typing.remove();
-    if (sessionId === requestSessionId) addBotMessage({ answer: "**No se completó la solicitud.** " + (error.name === "TimeoutError" ? "La solicitud tardó más de 35 segundos. Puedes reintentar." : error.message) }, { isError: true, retryMessage: message });
+    if (sessionId === requestSessionId) addBotMessage({ answer: "**No se completó la solicitud.** " + (error.name === "TimeoutError" ? "La solicitud tardó más de lo esperado. Puedes reintentar." : error.message) }, { isError: true, retryMessage: message });
   } finally {
     pendingChats.delete(requestSessionId);
     if (sessionId === requestSessionId) { els.send.disabled = false; els.input.focus(); }
@@ -581,6 +622,13 @@ els.messages.addEventListener("click", (event) => {
 function autoResize() { els.input.style.height = "auto"; els.input.style.height = `${Math.min(els.input.scrollHeight, 120)}px`; }
 
 els.form.addEventListener("submit", (event) => { event.preventDefault(); sendMessage(els.input.value); });
+$("#btn-attach")?.addEventListener("click", () => $("#bet-image-input")?.click());
+$("#bet-image-input")?.addEventListener("change", (event) => attachBetImage(event.target.files?.[0]));
+$("#composer-attachment-remove")?.addEventListener("click", clearAttachment);
+els.input.addEventListener("paste", (event) => {
+  const file = [...(event.clipboardData?.items || [])].find((item) => item.type.startsWith("image/"))?.getAsFile();
+  if (file) { event.preventDefault(); attachBetImage(file); }
+});
 $("#new-conversation")?.addEventListener("click", createConversation);
 $("#delete-conversation")?.addEventListener("click", deleteCurrentConversation);
 $("#delete-all-conversations")?.addEventListener("click", deleteAllConversations);

@@ -47,6 +47,7 @@ class QueryAnalysis:
     is_parlay: bool = False
     mentions_player: bool = False
     seeks_value_odds: bool = False
+    has_image: bool = False
     risk_profile: str = "moderado"
     odds: list[float] = field(default_factory=list)
     stake: float | None = None
@@ -200,6 +201,18 @@ El usuario pide una apuesta de **cuota realmente buena y objetiva**, sin conform
   - En jugadores: valora **+1.5 tiros al arco**, **+2.5 tiros totales** o **gol en cualquier momento** cuando sus promedios de los últimos 5 partidos lo respalden con objetividad.
 - Explica con frialdad matemática por qué esa cuota ofrece mejor relación riesgo/beneficio que la opción de cuota mínima."""
 
+BET_SLIP_IMAGE_MODULE = """\
+## MÓDULO: ANÁLISIS DE FOTO / BOLETO DE APUESTA
+El usuario adjuntó una **imagen o captura de su boleto de apuesta**. Debes:
+1. **Transcribir exactamente lo que dice la apuesta en la imagen**: partidos, equipos/jugadores, selecciones/mercados, líneas, cuotas individuales, cuota total y stake si aparece. Si alguna parte está borrosa o cortada, indícalo sin inventar.
+2. **Cruzar el boleto con las estadísticas reales de los últimos 5 partidos** (`<estadisticas_ultimos_5_partidos>` y `<contexto>`), mostrando la tabla obligatoria con estadísticas y promedios por equipo o jugador.
+3. **Detectar todas las problemáticas de la apuesta**:
+   - Selecciones con respaldo estadístico débil o contrario a los últimos 5 partidos (indica exactamente qué pata falla y por qué).
+   - Contradicciones o correlaciones negativas entre selecciones (p. ej. "gana X" combinado con "menos de 1.5 goles" y "-1.5 hándicap", o exceso de selecciones en una combinada que multiplica el riesgo y el margen de la casa).
+   - Cuotas con valor esperado negativo (`EV < 0`: probabilidad estimada menor que `1/cuota`) o líneas demasiado ajustadas/arriesgadas.
+   - Riesgo de stake excesivo si se muestra un monto alto respecto a la probabilidad combinada.
+4. **Emitir veredicto claro**: qué patas mantener, cuáles eliminar o ajustar para mejorar la objetividad y el EV."""
+
 MARKET_MODULES: dict[str, str] = {
     "1x2": "- **1X2**: pondera forma reciente, rendimiento local/visitante, xG a favor/en contra, H2H y bajas clave.",
     "doble_oportunidad": "- **Doble oportunidad**: suma probabilidades de los dos resultados cubiertos y advierte de la cuota baja.",
@@ -305,11 +318,17 @@ def build_system_prompt(analysis: QueryAnalysis, context_quality: str) -> tuple[
         sections.append(RESPONSIBLE_GAMBLING_MODULE)
         active.append("juego_responsable")
 
-    # Regla: calidad del contexto RAG
-    sections.append(CONTEXT_MODULES[context_quality])
-    active.append(f"contexto_{context_quality}")
+    # Regla: calidad del contexto RAG (si hay foto adjunta, el propio boleto aporta contexto visual)
+    effective_quality = "good" if (context_quality == "none" and analysis.has_image) else context_quality
+    sections.append(CONTEXT_MODULES[effective_quality])
+    active.append(f"contexto_{effective_quality}")
 
-    if context_quality != "none":
+    if effective_quality != "none":
+        # Regla: boleto/foto adjunta
+        if analysis.has_image:
+            sections.append(BET_SLIP_IMAGE_MODULE)
+            active.append("analisis_foto_apuesta")
+
         # Regla: petición de garantía
         if analysis.asks_guarantee:
             sections.append(GUARANTEE_MODULE)

@@ -1,0 +1,23 @@
+# Secretos y entorno local (nunca incluir en la imagen)
+.env
+.env.*
+!.env.example
+application-secret.properties
+
+# Entornos virtuales y caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Persistencia local (se monta como volumen en runtime)
+storage/
+
+# Git y editores
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

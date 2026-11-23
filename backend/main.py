@@ -142,10 +142,16 @@ class ChatFixtureContext(BaseModel):
     status: str = Field("NS", max_length=20)
 
 
+class ChatImageAttachment(BaseModel):
+    data: str = Field(..., min_length=10, max_length=6_000_000)
+    mime_type: str = Field("image/jpeg", pattern=r"^image/(png|jpeg|webp|gif)$")
+
+
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=1000, description="Propuesta de apuesta del usuario")
+    message: str = Field("", max_length=1000, description="Propuesta de apuesta del usuario")
     session_id: str = Field("default", min_length=1, max_length=64, pattern=r"^[\w-]+$")
     match_context: ChatFixtureContext | None = None
+    image: ChatImageAttachment | None = None
 
 
 class QuickAnalysisFixture(BaseModel):
@@ -285,26 +291,71 @@ def _local_fallback_answer(
     )
 
 
-def _generate_with_fallback(request: Request, system_prompt: str, user_prompt: str) -> tuple[str, LLMClient]:
+def _generate_with_fallback(
+    request: Request,
+    system_prompt: str,
+    user_prompt: str,
+    image_b64: str | None = None,
+    image_mime_type: str | None = None,
+    max_output_tokens: int | None = None,
+) -> tuple[str, LLMClient]:
     primary: LLMClient | None = request.app.state.llm
     fallback: LLMClient | None = request.app.state.llm_fallback
     if primary is None:
         if fallback is not None:
             try:
-                return fallback.generate(system_prompt, user_prompt), fallback
+                return fallback.generate(
+                    system_prompt, user_prompt, image_b64=image_b64,
+                    image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+                ), fallback
             except LLMError as exc:
                 raise HTTPException(status_code=503, detail=_llm_error_message(exc)) from exc
         raise HTTPException(status_code=503, detail=request.app.state.llm_error or "LLM no configurado.")
     try:
-        return primary.generate(system_prompt, user_prompt), primary
+        return primary.generate(
+            system_prompt, user_prompt, image_b64=image_b64,
+            image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+        ), primary
     except LLMError as exc:
         logger.warning("Falló el proveedor LLM principal (%s)", primary.provider)
         if fallback is not None:
             try:
-                return fallback.generate(system_prompt, user_prompt), fallback
+                return fallback.generate(
+                    system_prompt, user_prompt, image_b64=image_b64,
+                    image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+                ), fallback
             except LLMError:
                 logger.warning("También falló el proveedor LLM de respaldo (%s)", fallback.provider)
         raise HTTPException(status_code=503, detail=_llm_error_message(exc)) from exc
+
+
+def _extract_bet_slip_entities(request: Request, image: ChatImageAttachment) -> dict[str, Any]:
+    """Lee equipos, jugadores, selecciones y cuotas de la foto para enriquecer el RAG."""
+    primary: LLMClient | None = request.app.state.llm
+    if primary is not None and primary.provider == "mock":
+        return {}
+    extract_sys = (
+        "Extrae los datos visibles de la imagen de un boleto de apuesta deportiva. "
+        "Responde SOLO con JSON válido sin bloques markdown: "
+        '{"teams": ["..."], "players": ["..."], "selections": ["..."], "odds": [1.85], "stake": ""}. '
+        "Si un campo no aparece, déjalo como lista vacía."
+    )
+    try:
+        raw, _ = _generate_with_fallback(
+            request,
+            extract_sys,
+            "Extrae los equipos, jugadores, selecciones de apuesta, cuotas y stake visibles en esta imagen.",
+            image_b64=image.data,
+            image_mime_type=image.mime_type,
+            max_output_tokens=300,
+        )
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        parsed = json.loads(match.group(0) if match else cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception as exc:
+        logger.info("No se pudieron pre-extraer entidades del boleto (%s)", type(exc).__name__)
+        return {}
 
 
 def _is_schedule_question(message: str) -> bool:
@@ -595,16 +646,23 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     """
     store: VectorStore = request.app.state.vector_store
     llm: LLMClient | None = request.app.state.llm
-    message = payload.message.strip()
-    if not message:
-        raise HTTPException(status_code=422, detail="El mensaje no puede estar vacío.")
+    raw_message = payload.message.strip()
+    if not raw_message and not payload.image:
+        raise HTTPException(status_code=422, detail="Escribe una consulta o adjunta una foto de tu apuesta.")
 
-    if payload.match_context and _is_schedule_question(message):
+    message = raw_message or (
+        "Analiza la foto de mi apuesta: indica qué selecciones aparecen, cruza los equipos o jugadores "
+        "con sus estadísticas de los últimos 5 partidos (tabla y promedios), detecta las problemáticas "
+        "o riesgos del boleto y dame una recomendación objetiva."
+    )
+    stored_user_message = raw_message or "📸 Foto de apuesta adjunta"
+
+    if payload.match_context and not payload.image and _is_schedule_question(message):
         analysis = analyze_query(message, store.list_matches())
         _, active_rules = build_system_prompt(analysis, "good")
         answer = _fixture_schedule_answer(payload.match_context)
         row_id = database.save_interaction(
-            payload.session_id, message, answer, active_rules, [], "api-football:fixture-context"
+            payload.session_id, stored_user_message, answer, active_rules, [], "api-football:fixture-context"
         )
         return ChatResponse(
             id=row_id,
@@ -616,7 +674,13 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             provider="api-football:fixture-context",
         )
 
-    # 1) Resolver equipos mencionados (de match_context y/o del texto libre)
+    slip_info: dict[str, Any] = _extract_bet_slip_entities(request, payload.image) if payload.image else {}
+    slip_teams = [str(item) for item in (slip_info.get("teams") or []) if item]
+    slip_players = [str(item) for item in (slip_info.get("players") or []) if item]
+    slip_selections = [str(item) for item in (slip_info.get("selections") or []) if item]
+    analysis_text = " ".join([message, *slip_teams, *slip_players, *slip_selections]).strip()
+
+    # 1) Resolver equipos mencionados (de match_context, texto libre y boleto adjunto)
     extra_teams: list[dict[str, str]] = []
     if payload.match_context:
         comp_id = infer_league_id(payload.match_context.competition)
@@ -624,7 +688,10 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             {"name": payload.match_context.home, "league_id": comp_id or infer_league_id("", payload.match_context.home)},
             {"name": payload.match_context.away, "league_id": comp_id or infer_league_id("", payload.match_context.away)},
         ]
-    resolved_teams, resolved_players = resolve_entities_in_text(message, extra_teams=extra_teams)
+    resolved_teams, resolved_players = resolve_entities_in_text(analysis_text, extra_teams=extra_teams)
+    for sp in slip_players:
+        if sp not in resolved_players:
+            resolved_players.append(sp)
 
     # Alcance de la base vectorial: si hay match_context o equipos en vivo fuera de mock_matches,
     # evitamos mezclar fragmentos de otros partidos no relacionados.
@@ -639,7 +706,18 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         relevant_matches = known_matches
 
     # 2) Hechos de la consulta (Sistema Experto)
-    analysis = analyze_query(message, relevant_matches)
+    analysis = analyze_query(analysis_text, relevant_matches)
+    analysis.has_image = payload.image is not None
+    if slip_info.get("odds"):
+        for raw_odd in slip_info["odds"]:
+            try:
+                odd_val = float(str(raw_odd).replace(",", "."))
+                if 1.01 <= odd_val <= 100 and odd_val not in analysis.odds:
+                    analysis.odds.append(odd_val)
+            except ValueError:
+                pass
+    if len(slip_selections) >= 2:
+        analysis.is_parlay = True
     if resolved_players:
         analysis.mentions_player = True
     if payload.match_context and relevant_matches:
@@ -660,7 +738,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         except (TypeError, ValueError):
             season_year = datetime.now().year
 
-        player_search_text = " ".join([message, *resolved_players]).strip()
+        player_search_text = " ".join([analysis_text, *resolved_players]).strip()
 
         def _fetch_report(team_info: dict[str, str]) -> dict[str, Any] | None:
             try:
@@ -752,7 +830,13 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     # 6) Llamada al LLM (con respaldo local estructurado si todos los modelos fallan)
     try:
-        answer, used_llm = _generate_with_fallback(request, system_prompt, user_prompt)
+        answer, used_llm = _generate_with_fallback(
+            request,
+            system_prompt,
+            user_prompt,
+            image_b64=payload.image.data if payload.image else None,
+            image_mime_type=payload.image.mime_type if payload.image else None,
+        )
         provider = f"{used_llm.provider}:{used_llm.model}"
     except HTTPException as exc:
         if exc.status_code != 503:
@@ -764,7 +848,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     # 7) Persistencia
     row_id = database.save_interaction(
-        payload.session_id, message, answer, active_rules, sources, provider
+        payload.session_id, stored_user_message, answer, active_rules, sources, provider
     )
 
     return ChatResponse(

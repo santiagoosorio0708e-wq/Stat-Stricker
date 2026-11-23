@@ -163,6 +163,23 @@ uvicorn backend.main:app --reload --port 8011
 
 **6. Abrir la aplicación:** 👉 http://127.0.0.1:8011 · Documentación Swagger: http://127.0.0.1:8011/docs
 
+### 🐳 Ejecución con Docker (recomendado para mantener la API siempre activa)
+
+Asegúrate de tener **Docker Desktop** abierto y tu archivo `.env` creado a partir de `.env.example`.
+
+```bash
+# Construir la imagen y levantar la API en segundo plano
+docker compose up -d --build
+
+# Ver logs en tiempo real
+docker compose logs -f
+
+# Detener el contenedor (conserva ./storage)
+docker compose down
+```
+
+La primera vez inicializará automáticamente ChromaDB/SQLite con `data/mock_matches.json` y quedará escuchando en **http://127.0.0.1:8011**.
+
 ## 🚀 Uso y Características
 
 - 💬 **Chat Glassmorphism** con sugerencias rápidas, tarjetas de partidos y panel de reglas activas.

@@ -131,7 +131,7 @@ def build_chunks(match: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]
 # ====================================================================== #
 # Ejecución
 # ====================================================================== #
-def ingest(file_path: Path, reset: bool = False) -> int:
+def ingest(file_path: Path, reset: bool = False, if_empty: bool = False) -> int:
     with file_path.open(encoding="utf-8") as fh:
         data = json.load(fh)
 
@@ -142,6 +142,10 @@ def ingest(file_path: Path, reset: bool = False) -> int:
     print(f"⚙️  Proveedor de embeddings: {settings.embedding_provider}")
     embedder = get_embedding_provider(settings)
     store = VectorStore(settings.chroma_path, settings.chroma_collection, embedder)
+
+    if if_empty and not reset and store.count() > 0:
+        print(f"ℹ️  ChromaDB ya contiene {store.count()} fragmentos; se omite la ingesta.")
+        return store.count()
 
     if reset:
         print("🧹 Reiniciando colección vectorial...")
@@ -167,13 +171,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingesta de datos de fútbol en ChromaDB")
     parser.add_argument("--file", type=Path, default=settings.data_file, help="Ruta al JSON de partidos")
     parser.add_argument("--reset", action="store_true", help="Borra la colección antes de ingestar")
+    parser.add_argument("--if-empty", action="store_true", help="Solo ingesta si la colección está vacía")
     args = parser.parse_args()
 
     if not args.file.exists():
         sys.exit(f"❌ No se encontró el archivo {args.file}")
 
     init_db()  # deja también lista la base SQLite del historial
-    total = ingest(args.file, reset=args.reset)
+    total = ingest(args.file, reset=args.reset, if_empty=args.if_empty)
     print(f"✅ Ingesta completada. Fragmentos en la colección: {total}")
     print(f"   ChromaDB: {settings.chroma_path}")
     print(f"   SQLite:   {settings.sqlite_path}")
