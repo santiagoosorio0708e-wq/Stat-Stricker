@@ -143,6 +143,118 @@ function setConversationTitle(message) {
 }
 function escapeHtml(value) { return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function safeImage(url) { return typeof url === "string" && /^https:\/\//i.test(url) ? escapeHtml(url) : ""; }
+function safeTurnImageUrl(item) {
+  if (typeof item?.imageUrl === "string" && /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(item.imageUrl)) return item.imageUrl;
+  const data = String(item?.user_image_data || "").trim();
+  const mime = String(item?.user_image_mime || "image/jpeg").trim();
+  if (data && /^image\/(png|jpeg|webp|gif)$/i.test(mime) && /^[A-Za-z0-9+/=]+$/.test(data)) {
+    return `data:${mime};base64,${data}`;
+  }
+  return "";
+}
+const CHAT_DB_NAME = "StatStrikerChatDB";
+const CHAT_STORE_NAME = "sessions";
+const LOCAL_TURNS_FALLBACK_KEY = "statstriker_local_turns_v1";
+let chatDbPromise = null;
+function openChatDb() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  if (chatDbPromise) return chatDbPromise;
+  chatDbPromise = new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(CHAT_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(CHAT_STORE_NAME)) db.createObjectStore(CHAT_STORE_NAME, { keyPath: "sessionId" });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  return chatDbPromise;
+}
+function readFallbackTurnsMap() {
+  try { const parsed = JSON.parse(localStorage.getItem(LOCAL_TURNS_FALLBACK_KEY) || "{}"); return parsed && typeof parsed === "object" ? parsed : {}; }
+  catch { return {}; }
+}
+function writeFallbackTurnsMap(map) {
+  try { localStorage.setItem(LOCAL_TURNS_FALLBACK_KEY, JSON.stringify(map)); } catch {
+    try {
+      const compact = {};
+      Object.entries(map).slice(-8).forEach(([sid, turns]) => {
+        compact[sid] = (Array.isArray(turns) ? turns : []).slice(-12).map((t) => ({ ...t, user_image_data: "", imageUrl: "" }));
+      });
+      localStorage.setItem(LOCAL_TURNS_FALLBACK_KEY, JSON.stringify(compact));
+    } catch { /* sin espacio en localStorage */ }
+  }
+}
+async function readLocalTurns(targetSessionId) {
+  const db = await openChatDb();
+  if (db) {
+    const idbTurns = await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(CHAT_STORE_NAME, "readonly");
+        const req = tx.objectStore(CHAT_STORE_NAME).get(targetSessionId);
+        req.onsuccess = () => resolve(Array.isArray(req.result?.turns) ? req.result.turns : null);
+        req.onerror = () => resolve(null);
+      } catch { resolve(null); }
+    });
+    if (idbTurns && idbTurns.length) return idbTurns;
+  }
+  const map = readFallbackTurnsMap();
+  return Array.isArray(map[targetSessionId]) ? map[targetSessionId] : [];
+}
+async function writeLocalTurns(targetSessionId, turns) {
+  const cleanTurns = (Array.isArray(turns) ? turns : []).slice(-60);
+  const db = await openChatDb();
+  if (db) {
+    await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(CHAT_STORE_NAME, "readwrite");
+        tx.objectStore(CHAT_STORE_NAME).put({ sessionId: targetSessionId, turns: cleanTurns, updatedAt: Date.now() });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  const map = readFallbackTurnsMap();
+  map[targetSessionId] = cleanTurns;
+  writeFallbackTurnsMap(map);
+}
+async function deleteLocalTurns(targetSessionId) {
+  const db = await openChatDb();
+  if (db) {
+    await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(CHAT_STORE_NAME, "readwrite");
+        tx.objectStore(CHAT_STORE_NAME).delete(targetSessionId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  const map = readFallbackTurnsMap();
+  delete map[targetSessionId];
+  writeFallbackTurnsMap(map);
+}
+function openImageLightbox(src) {
+  if (!src) return;
+  let modal = $("#image-lightbox");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "image-lightbox";
+    modal.className = "image-lightbox";
+    modal.innerHTML = `<button class="image-lightbox__close" type="button" aria-label="Cerrar imagen">×</button><img class="image-lightbox__img" alt="Captura de apuesta guardada">`;
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal || event.target.closest(".image-lightbox__close")) modal.hidden = true;
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !modal.hidden) modal.hidden = true;
+    });
+    document.body.appendChild(modal);
+  }
+  modal.querySelector(".image-lightbox__img").src = src;
+  modal.hidden = false;
+}
 async function api(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, { headers: { "Content-Type": "application/json" }, ...options });
   const data = await response.json().catch(() => ({}));
@@ -405,15 +517,73 @@ function renderMatches(matches) {
     return `<button class="match-card" type="button" data-fixture-id="${escapeHtml(match.id)}" data-q="${escapeHtml(prompt)}"><span class="match-card__comp">${leagueLogo}<span>${escapeHtml(match.competition)}${escapeHtml(round)}</span></span><span class="match-card__teams"><span class="match-side">${homeLogo}<span>${escapeHtml(match.home)}</span></span><span class="match-vs">vs</span><span class="match-side">${awayLogo}<span>${escapeHtml(match.away)}</span></span></span><span class="match-card__date">◷ ${escapeHtml(preciseDate)} · hora de Colombia</span></button>`;
   }).join("");
 }
+function renderTurnsList(turns) {
+  els.messages.innerHTML = "";
+  if (!turns || !turns.length) { renderWelcomeMessage(); return; }
+  turns.forEach((item) => {
+    const imgUrl = safeTurnImageUrl(item);
+    addUserMessage(item.user_message, imgUrl);
+    if (item.bot_response) {
+      addBotMessage(
+        { answer: item.bot_response, active_rules: item.active_rules || [], sources: item.sources || [] },
+        { isError: Boolean(item.isError), fixture: item.fixture ? restoreFixtureContext(item.fixture) : null },
+      );
+    }
+  });
+}
+async function syncBackendSessions() {
+  try {
+    const remoteSessions = await api("/api/history?limit=50");
+    if (!Array.isArray(remoteSessions) || !remoteSessions.length) return;
+    let changed = false;
+    remoteSessions.forEach((remote) => {
+      if (!remote?.id) return;
+      const exists = conversations.some((item) => item.id === remote.id);
+      if (!exists) {
+        const ts = Date.parse(remote.updated_at || remote.created_at || "") || Date.now();
+        conversations.push({
+          id: remote.id,
+          title: remote.title || "Conversación anterior",
+          createdAt: Date.parse(remote.created_at || "") || ts,
+          updatedAt: ts,
+          matchContext: null,
+        });
+        changed = true;
+      }
+    });
+    if (changed) { saveConversations(); renderConversations(); }
+  } catch { /* si la API está apagada mantenemos las conversaciones locales */ }
+}
 async function loadHistory() {
   const activeId = sessionId;
+  const localTurns = await readLocalTurns(activeId);
+  if (sessionId !== activeId) return;
+  if (localTurns.length) renderTurnsList(localTurns);
   try {
     const history = await api(`/api/history/${encodeURIComponent(activeId)}`);
     if (sessionId !== activeId) return;
-    els.messages.innerHTML = "";
-    if (!history.length) renderWelcomeMessage();
-    history.forEach((item) => { addUserMessage(item.user_message); addBotMessage({ answer: item.bot_response, active_rules: item.active_rules, sources: item.sources }); });
-  } catch { if (sessionId === activeId) renderWelcomeMessage(); }
+    if (Array.isArray(history) && history.length) {
+      const localById = new Map(localTurns.filter((t) => t.id != null).map((t) => [String(t.id), t]));
+      const merged = history.map((item) => {
+        const localMatch = localById.get(String(item.id));
+        const imgUrl = safeTurnImageUrl(item) || safeTurnImageUrl(localMatch);
+        return {
+          ...item,
+          imageUrl: imgUrl,
+          fixture: localMatch?.fixture || null,
+        };
+      });
+      const maxRemoteId = Math.max(0, ...history.map((h) => Number(h.id) || 0));
+      const localOnly = localTurns.filter((t) => !t.id && (!t.syncedBeforeId || t.syncedBeforeId >= maxRemoteId));
+      const combined = [...merged, ...localOnly];
+      await writeLocalTurns(activeId, combined);
+      if (sessionId === activeId) renderTurnsList(combined);
+    } else if (!localTurns.length) {
+      renderWelcomeMessage();
+    }
+  } catch {
+    if (sessionId === activeId && !localTurns.length) renderWelcomeMessage();
+  }
 }
 function renderWelcomeMessage() {
   els.messages.innerHTML = `<article class="msg msg--bot"><div class="msg__avatar">S</div><div class="msg__bubble"><p>¡Hola! Soy <strong>StatStriker</strong>, tu analista de datos deportivos.</p><p>Cuéntame tu propuesta de apuesta y la evaluaré con estadísticas, enfrentamientos, contexto y riesgo.</p></div></article>`;
@@ -438,6 +608,7 @@ async function deleteCurrentConversation() {
   const targetId = sessionId;
   pendingChats.delete(targetId);
   try { await api(`/api/history/${encodeURIComponent(targetId)}`, { method: "DELETE" }); } catch { /* si no existe en BD, continuamos */ }
+  await deleteLocalTurns(targetId);
   conversations = conversations.filter((item) => item.id !== targetId);
   if (conversations.length) {
     const next = conversations.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
@@ -456,7 +627,10 @@ async function deleteAllConversations() {
   if (!confirm("¿Terminar y eliminar TODAS las conversaciones guardadas?")) return;
   const ids = conversations.map((item) => item.id);
   ids.forEach((id) => pendingChats.delete(id));
-  await Promise.allSettled(ids.map((id) => api(`/api/history/${encodeURIComponent(id)}`, { method: "DELETE" })));
+  await Promise.allSettled([
+    ...ids.map((id) => api(`/api/history/${encodeURIComponent(id)}`, { method: "DELETE" })),
+    ...ids.map((id) => deleteLocalTurns(id)),
+  ]);
   conversations = [];
   createConversation();
 }
@@ -583,12 +757,30 @@ async function sendMessage(text, { retry = false } = {}) {
   const requestSessionId = sessionId;
   if ((!rawMessage && !attachment) || pendingChats.has(requestSessionId)) return;
   const normalizedMessage = normalizeMention(message);
-  const asksSchedule = /\b(cuando|que dia|a que hora|fecha|horario|hora de inicio)\b/.test(normalizedMessage);
   pendingChats.add(requestSessionId); els.send.disabled = true;
+  const storedUserText = rawMessage || (attachment ? "📸 Foto de apuesta adjunta" : "");
+  const localTurn = {
+    localId: `t-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: null,
+    user_message: storedUserText,
+    user_image_data: attachment?.data || "",
+    user_image_mime: attachment?.mime_type || "",
+    imageUrl: attachment?.previewUrl || "",
+    bot_response: "",
+    active_rules: [],
+    sources: [],
+    fixture: null,
+    isError: false,
+    created_at: new Date().toISOString(),
+  };
   if (!retry) {
     els.input.value = ""; autoResize(); clearAttachment();
-    addUserMessage(rawMessage || "Analiza esta foto de mi apuesta", attachment?.previewUrl || "");
+    addUserMessage(storedUserText, localTurn.imageUrl);
     setConversationTitle(rawMessage || "Foto de apuesta");
+    const conv = conversations.find((item) => item.id === requestSessionId);
+    if (conv) { conv.updatedAt = Date.now(); saveConversations(); }
+    const existingTurns = await readLocalTurns(requestSessionId);
+    await writeLocalTurns(requestSessionId, [...existingTurns, localTurn]);
   }
   const typing = addTyping();
   try {
@@ -601,7 +793,7 @@ async function sendMessage(text, { retry = false } = {}) {
     if (matchContext) {
       lastFixtureContext = matchContext;
       const conversation = conversations.find((item) => item.id === requestSessionId);
-      if (conversation) { conversation.matchContext = matchContext; saveConversations(); }
+      if (conversation) { conversation.matchContext = matchContext; conversation.updatedAt = Date.now(); saveConversations(); }
     }
     const data = await api("/api/chat", {
       method: "POST",
@@ -619,16 +811,45 @@ async function sendMessage(text, { retry = false } = {}) {
         } : null,
       }),
     });
-    typing.remove(); if (sessionId === requestSessionId) addBotMessage(data, { fixture: matchContext });
+    typing.remove();
+    const turnsNow = await readLocalTurns(requestSessionId);
+    const idx = turnsNow.findIndex((t) => t.localId === localTurn.localId);
+    const completedTurn = {
+      ...(idx >= 0 ? turnsNow[idx] : localTurn),
+      id: data.id ?? null,
+      bot_response: data.answer || "",
+      active_rules: data.active_rules || [],
+      sources: data.sources || [],
+      fixture: matchContext ? {
+        id: matchContext.id, home: matchContext.home, away: matchContext.away,
+        homeLogo: matchContext.homeLogo, awayLogo: matchContext.awayLogo,
+        competition: matchContext.competition,
+        time: matchContext.time?.toISOString() || "",
+        status: matchContext.status,
+      } : null,
+      isError: false,
+    };
+    if (idx >= 0) turnsNow[idx] = completedTurn; else turnsNow.push(completedTurn);
+    await writeLocalTurns(requestSessionId, turnsNow);
+    if (sessionId === requestSessionId) addBotMessage(data, { fixture: matchContext });
   } catch (error) {
     typing.remove();
-    if (sessionId === requestSessionId) addBotMessage({ answer: "**No se completó la solicitud.** " + (error.name === "TimeoutError" ? "La solicitud tardó más de lo esperado. Puedes reintentar." : error.message) }, { isError: true, retryMessage: message });
+    const errorAnswer = "**No se completó la solicitud.** " + (error.name === "TimeoutError" ? "La solicitud tardó más de lo esperado. Puedes reintentar." : error.message);
+    const turnsNow = await readLocalTurns(requestSessionId);
+    const idx = turnsNow.findIndex((t) => t.localId === localTurn.localId);
+    if (idx >= 0) {
+      turnsNow[idx] = { ...turnsNow[idx], bot_response: errorAnswer, isError: true };
+      await writeLocalTurns(requestSessionId, turnsNow);
+    }
+    if (sessionId === requestSessionId) addBotMessage({ answer: errorAnswer }, { isError: true, retryMessage: message });
   } finally {
     pendingChats.delete(requestSessionId);
     if (sessionId === requestSessionId) { els.send.disabled = false; els.input.focus(); }
   }
 }
 els.messages.addEventListener("click", (event) => {
+  const img = event.target.closest(".msg__image");
+  if (img) { openImageLightbox(img.src); return; }
   const retryButton = event.target.closest("[data-retry-message]");
   if (retryButton) sendMessage(retryButton.dataset.retryMessage, { retry: true });
 });
@@ -1732,9 +1953,10 @@ renderConversations();
 lastFixtureContext = restoreFixtureContext(activeConversation()?.matchContext);
 (async () => {
   await loadHealth();
+  await syncBackendSessions();
+  await loadHistory();
   await loadFootballLeagues();
   await initTeamComparison();
   if (!catalog[selectedLeague.id]) await loadLeague(selectedLeague.id);
   if (!recommendedTeamGroups.length) await loadMatches();
-  await loadHistory();
 })();

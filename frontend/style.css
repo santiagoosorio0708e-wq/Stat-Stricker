@@ -554,5 +554,10 @@ main#inicio{width:100%;max-width:none}
 .composer-attachment img{width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid #ffffff1a}
 .composer-attachment span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#c7e8d9}
 .composer-attachment-remove{border:0;background:transparent;color:#fca5a5;font-size:14px;font-weight:700;cursor:pointer;padding:4px 6px}
-.msg__image{display:block;max-width:260px;max-height:220px;width:auto;height:auto;border-radius:10px;margin-bottom:8px;border:1px solid #ffffff1f;object-fit:contain}
+.msg__image{display:block;max-width:260px;max-height:220px;width:auto;height:auto;border-radius:10px;margin-bottom:8px;border:1px solid #ffffff1f;object-fit:contain;cursor:zoom-in;transition:transform .15s ease,border-color .15s ease}
+.msg__image:hover{transform:scale(1.015);border-color:#20d89b88}
+.image-lightbox{position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(4,12,11,.88);backdrop-filter:blur(6px)}
+.image-lightbox[hidden]{display:none}
+.image-lightbox__img{max-width:min(94vw,1080px);max-height:88vh;border-radius:12px;border:1px solid rgba(255,255,255,.18);box-shadow:0 24px 60px rgba(0,0,0,.65);object-fit:contain;background:#091715}
+.image-lightbox__close{position:fixed;top:18px;right:22px;width:40px;height:40px;border:1px solid rgba(255,255,255,.22);border-radius:50%;background:rgba(15,32,30,.92);color:#e9f6f2;font-size:20px;line-height:1;cursor:pointer}
 @media(max-width:520px){.composer-mode{padding:0 6px;font-size:12px}.composer-mode select{font-size:12px}}

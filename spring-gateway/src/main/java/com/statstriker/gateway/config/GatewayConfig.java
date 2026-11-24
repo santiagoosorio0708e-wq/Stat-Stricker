@@ -49,7 +49,9 @@ public class GatewayConfig implements WebMvcConfigurer {
             buildCache("live", Duration.ofSeconds(20), 10),
             buildCache("quickAnalysis", Duration.ofMinutes(5), 100),
             buildCache("chatResponses", Duration.ofSeconds(props.chatCacheTtlSeconds()), 300),
-            buildAccessCache("sessionMatchContext", Duration.ofMinutes(props.sessionContextTtlMinutes()), 1000)
+            buildAccessCache("sessionMatchContext", Duration.ofMinutes(props.sessionContextTtlMinutes()), 1000),
+            buildAccessCache("sessionHistoryBackup", Duration.ofHours(12), 500),
+            buildCache("historySessions", Duration.ofMinutes(5), 20)
         ));
         return manager;
     }

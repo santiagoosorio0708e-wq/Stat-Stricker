@@ -858,7 +858,14 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     # 7) Persistencia
     row_id = database.save_interaction(
-        payload.session_id, stored_user_message, answer, active_rules, sources, provider
+        payload.session_id,
+        stored_user_message,
+        answer,
+        active_rules,
+        sources,
+        provider,
+        user_image_data=payload.image.data if payload.image else "",
+        user_image_mime=payload.image.mime_type if payload.image else "",
     )
 
     return ChatResponse(
@@ -870,6 +877,11 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         analysis=analysis.to_dict(),
         provider=provider,
     )
+
+
+@app.get("/api/history")
+def list_history_sessions(limit: int = 50) -> list[dict[str, Any]]:
+    return database.list_sessions(limit=max(1, min(limit, 200)))
 
 
 @app.get("/api/history/{session_id}")

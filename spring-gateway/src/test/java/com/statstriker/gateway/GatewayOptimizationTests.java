@@ -193,4 +193,39 @@ class GatewayOptimizationTests {
 
         mockServer.verify();
     }
+
+    @Test
+    void historyBackupPreservesImagesWhenAiEngineDisconnects() throws Exception {
+        mockServer.expect(once(), requestTo("http://ai-engine.test/api/chat"))
+            .andExpect(method(HttpMethod.POST))
+            .andRespond(withSuccess("""
+                {"id":10,"answer":"Boleto analizado","active_rules":["analisis_imagen_apuesta"],"context_quality":"low","sources":[],"analysis":{},"provider":"gemini:gemini-3.5-flash-lite"}
+                """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(twice(), requestTo("http://ai-engine.test/api/history/s_img?limit=50"))
+            .andExpect(method(HttpMethod.GET))
+            .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withServiceUnavailable());
+
+        String imageChat = """
+            {
+              "session_id": "s_img",
+              "message": "Analiza esta captura",
+              "image": {
+                "data": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=",
+                "mime_type": "image/jpeg"
+              }
+            }
+            """;
+        mockMvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON).content(imageChat))
+            .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/history/s_img"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$[0].user_message").value("Analiza esta captura"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$[0].user_image_data").value("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="))
+            .andExpect(MockMvcResultMatchers.jsonPath("$[0].user_image_mime").value("image/jpeg"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$[0].bot_response").value("Boleto analizado"));
+
+        mockServer.verify();
+    }
 }

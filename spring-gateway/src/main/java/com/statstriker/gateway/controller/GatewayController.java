@@ -146,6 +146,16 @@ public class GatewayController {
         return chatService.processChat(payload);
     }
 
+    @GetMapping("/history")
+    public JsonNode historySessions(@RequestParam(defaultValue = "50") int limit) {
+        String uri = UriComponentsBuilder.fromPath("/api/history")
+            .queryParam("limit", limit)
+            .build()
+            .encode()
+            .toUriString();
+        return chatService.listSessionsWithFallback(uri);
+    }
+
     @GetMapping("/history/{sessionId}")
     public JsonNode history(
         @PathVariable String sessionId,
@@ -156,7 +166,7 @@ public class GatewayController {
             .buildAndExpand(sessionId)
             .encode()
             .toUriString();
-        return aiClient.getJson(uri);
+        return chatService.getHistoryWithFallback(sessionId, uri);
     }
 
     @DeleteMapping("/history/{sessionId}")
