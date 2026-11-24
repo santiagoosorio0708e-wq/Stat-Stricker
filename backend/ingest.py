@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from backend.config import settings
 from backend.database import init_db
 from backend.embeddings import get_embedding_provider
@@ -153,13 +155,17 @@ def ingest(file_path: Path, reset: bool = False, if_empty: bool = False) -> int:
     else:
         store.check_compatibility()
 
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
     ids, docs, metas = [], [], []
     for match in matches:
         chunks = build_chunks(match)
         for chunk_id, text, meta in chunks:
-            ids.append(chunk_id)
-            docs.append(text)
-            metas.append(meta)
+            parts = splitter.split_text(text) if len(text) > 1200 else [text]
+            for idx, part in enumerate(parts):
+                part_id = chunk_id if len(parts) == 1 else f"{chunk_id}::p{idx}"
+                ids.append(part_id)
+                docs.append(part)
+                metas.append(meta)
         print(f"   • {match['home_team']['name']} vs {match['away_team']['name']}: {len(chunks)} fragmentos")
 
     print(f"🧠 Generando embeddings de {len(docs)} fragmentos...")

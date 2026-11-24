@@ -9,9 +9,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body class="dashboard">
+  <div class="splash-screen" id="splash-screen" role="status" aria-live="polite" aria-label="Cargando StatStriker">
+    <div class="splash-screen__card">
+      <div class="splash-screen__logo" aria-hidden="true">
+        <span class="splash-screen__ring"></span>
+        <svg viewBox="0 0 32 32"><path d="M22.8 4.2H11.4c-3.2 0-5.7 2-6.4 5.1L2.2 22.1c-.8 3.4 1.3 5.7 4.7 5.7h3.7l1.3-6.1h-2l1-4.5h6l1-4.5h-6.1l.7-3.1h9.6l.8-5.4Z"/><path d="M14.7 27.8h5.2l2.7-12.2h5.2l1-4.6H17.3l-1 4.6h2.5l-4.1 12.2Z"/></svg>
+      </div>
+      <div class="splash-screen__brand">Stat<span>Striker</span></div>
+      <p class="splash-screen__tagline">El apoyo hacia una mejor decisión</p>
+      <div class="splash-screen__bar" aria-hidden="true"><span></span></div>
+    </div>
+  </div>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="#inicio" aria-label="StatStriker, inicio">
@@ -268,6 +279,6 @@
       <button class="mobile-nav-item" type="button" data-view="advanced" aria-label="Métricas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 3 3 6-7m-4 0h4v4"/></svg><span>Métricas</span></button>
     </nav>
   </div>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

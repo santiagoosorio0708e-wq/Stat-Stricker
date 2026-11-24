@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from threading import Lock
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 from urllib.request import Request, urlopen
 
 from backend.config import settings
@@ -438,6 +438,144 @@ def _thesportsdb_league_teams(league_id: str) -> list[dict[str, Any]]:
     return teams
 
 
+def _clean_team_name_input(value: str) -> str:
+    text = str(value or "")
+    for _ in range(2):
+        if "%" in text:
+            decoded = unquote(text)
+            if decoded == text:
+                break
+            text = decoded
+    return " ".join(text.split())
+
+
+def _espn_standings_rows(league_slug: str) -> list[dict[str, Any]]:
+    """Fetch current league/competition standings from ESPN public endpoint."""
+    slug = str(league_slug or "").strip()
+    if not slug:
+        return []
+    cache_key = f"espn:standings:{slug}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+    try:
+        payload = _espn_json(f"https://site.api.espn.com/apis/v2/sports/soccer/{slug}/standings")
+    except FootballAPIError:
+        return []
+
+    children = payload.get("children") or [payload]
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for child in children:
+        entries = ((child.get("standings") or {}).get("entries")) or []
+        for idx, entry in enumerate(entries, 1):
+            team = entry.get("team") or {}
+            tid = str(team.get("id") or "")
+            name = str(team.get("displayName") or team.get("name") or "").strip()
+            if not name or (tid and tid in seen_ids):
+                continue
+            if tid:
+                seen_ids.add(tid)
+            stats_map = {str(s.get("name") or ""): s.get("value") for s in (entry.get("stats") or []) if s.get("name")}
+            note = entry.get("note") or {}
+            rank_raw = stats_map.get("rank") if stats_map.get("rank") is not None else note.get("rank", idx)
+            played_raw = stats_map.get("gamesPlayed")
+            wins_raw = stats_map.get("wins")
+            draws_raw = stats_map.get("ties")
+            loses_raw = stats_map.get("losses")
+            gf_raw = stats_map.get("pointsFor")
+            ga_raw = stats_map.get("pointsAgainst")
+            gd_raw = stats_map.get("pointDifferential")
+            pts_raw = stats_map.get("points")
+
+            def _to_int(val: Any) -> int | None:
+                if val is None:
+                    return None
+                try:
+                    return int(round(float(val)))
+                except (TypeError, ValueError):
+                    return None
+
+            played = _to_int(played_raw)
+            gf = _to_int(gf_raw)
+            ga = _to_int(ga_raw)
+            logos = team.get("logos") or []
+            logo = str(team.get("logo") or (logos[0].get("href") if logos else "") or "")
+            rows.append({
+                "rank": _to_int(rank_raw),
+                "team_id": tid,
+                "name": name,
+                "short_name": str(team.get("shortDisplayName") or team.get("name") or name),
+                "logo": logo,
+                "points": _to_int(pts_raw),
+                "played": played,
+                "wins": _to_int(wins_raw),
+                "draws": _to_int(draws_raw),
+                "loses": _to_int(loses_raw),
+                "goals_for": gf,
+                "goals_against": ga,
+                "goal_difference": _to_int(gd_raw),
+                "goals_for_avg": round(gf / played, 2) if gf is not None and played else None,
+                "goals_against_avg": round(ga / played, 2) if ga is not None and played else None,
+                "form": "",
+                "description": str(note.get("description") or ""),
+            })
+    rows.sort(key=lambda row: row["rank"] if isinstance(row.get("rank"), int) else 999)
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 15 * 60, rows)
+    return rows
+
+
+def _find_standing_row(rows: list[dict[str, Any]], team_name: str, espn_team_id: str = "") -> dict[str, Any] | None:
+    if not rows:
+        return None
+    if espn_team_id:
+        by_id = next((r for r in rows if str(r.get("team_id") or "") == str(espn_team_id)), None)
+        if by_id:
+            return by_id
+    clean = _clean_team_name_input(team_name)
+    target = _normalized_team_name(clean)
+    if not target:
+        return None
+    for row in rows:
+        for candidate in (row.get("name", ""), row.get("short_name", "")):
+            if candidate and _normalized_team_name(candidate) == target:
+                return row
+    target_tokens = {t for t in target.split() if t not in {"fc", "cf", "ac", "sc", "club", "de", "la", "el", "united", "city"}}
+    best_row: dict[str, Any] | None = None
+    best_score = 0
+    for row in rows:
+        cand_norm = _normalized_team_name(row.get("name", ""))
+        if not cand_norm:
+            continue
+        if target in cand_norm or cand_norm in target:
+            return row
+        cand_tokens = {t for t in cand_norm.split() if t not in {"fc", "cf", "ac", "sc", "club", "de", "la", "el", "united", "city"}}
+        overlap = len(target_tokens & cand_tokens)
+        if overlap > best_score and overlap >= max(1, len(target_tokens)):
+            best_score = overlap
+            best_row = row
+    return best_row
+
+
+def _espn_standings_for_team(league_id: str, team_name: str, espn_team_id: str = "") -> tuple[dict[str, Any] | None, str]:
+    slug = _resolve_espn_slug(str(league_id))
+    clean_name = _clean_team_name_input(team_name)
+    if slug:
+        row = _find_standing_row(_espn_standings_rows(slug), clean_name, espn_team_id=espn_team_id)
+        if row:
+            return row, slug
+    if clean_name:
+        found = _search_espn_team(clean_name)
+        if found and found.get("slug") and found["slug"] != slug:
+            row = _find_standing_row(_espn_standings_rows(found["slug"]), clean_name, espn_team_id=found.get("id", ""))
+            if row:
+                return row, found["slug"]
+    return None, slug
+
+
 def league_top_teams(league_id: int, season: int) -> list[dict[str, Any]]:
     """Devuelve los tres primeros puestos de la tabla oficial disponible."""
     if str(league_id) == "2":
@@ -450,8 +588,9 @@ def league_top_teams(league_id: int, season: int) -> list[dict[str, Any]]:
     try:
         payload = _request("standings", {"league": str(league_id), "season": str(season)}, ttl=6 * 60 * 60)
     except FootballAPIError:
-        # Fall back to public tables, then calculate a clearly labeled partial
-        # ranking for competitions whose public provider exposes match results only.
+        espn_rows = _espn_standings_rows(_resolve_espn_slug(str(league_id)))
+        if espn_rows:
+            return espn_rows[:3]
         try:
             rows = _thesportsdb_top_teams(str(league_id))
         except FootballAPIError:
@@ -885,12 +1024,32 @@ def _espn_score(value: Any) -> int | None:
         return None
 
 
-def team_statistics(league_id: int, season: int, team_id: int, team_name: str = "") -> dict[str, Any]:
-    """Return a compact set of current team stats for side-by-side comparison."""
+def _enrich_rank_and_points(stats: dict[str, Any], league_id: str, team_name: str, espn_team_id: str = "") -> dict[str, Any]:
+    """Ensure rank and points are filled from official ESPN/UEFA tables whenever available."""
+    if stats.get("rank") is not None and stats.get("points") is not None:
+        return stats
+    row: dict[str, Any] | None = None
     if str(league_id) == "2":
         try:
-            normalized_name = _normalized_team_name(team_name)
-            row = next((item for item in _uefa_champions_standings() if _normalized_team_name(item["name"]) == normalized_name), None)
+            row = _find_standing_row(_uefa_champions_standings(), team_name)
+        except FootballAPIError:
+            row = None
+    if not row:
+        row, _ = _espn_standings_for_team(str(league_id), team_name, espn_team_id=espn_team_id)
+    if row:
+        if stats.get("rank") is None and row.get("rank") is not None:
+            stats["rank"] = row.get("rank")
+        if stats.get("points") is None and row.get("points") is not None:
+            stats["points"] = row.get("points")
+    return stats
+
+
+def team_statistics(league_id: int, season: int, team_id: int, team_name: str = "") -> dict[str, Any]:
+    """Return a compact set of current team stats for side-by-side comparison."""
+    clean_name = _clean_team_name_input(team_name)
+    if str(league_id) == "2":
+        try:
+            row = _find_standing_row(_uefa_champions_standings(), clean_name)
             if row:
                 return {
                     "team": {"id": str(team_id), "name": row["name"], "logo": row.get("logo")},
@@ -904,7 +1063,10 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
                     "source": "UEFA · tabla oficial de fase liga 2026/27",
                 }
         except FootballAPIError:
-            logger.info("Se usará el respaldo para comparar este club de Champions.")
+            logger.info("Se usará el respaldo ESPN para comparar este club de Champions.")
+        espn_ucl = _espn_team_recent_statistics("2", season, clean_name)
+        if espn_ucl:
+            return espn_ucl
     try:
         payload = _request(
             "teams/statistics",
@@ -912,14 +1074,14 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
             ttl=6 * 60 * 60,
         )
     except FootballAPIError:
-        return _espn_team_recent_statistics(str(league_id), season, team_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
+        return _espn_team_recent_statistics(str(league_id), season, clean_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), clean_name)
     item = payload.get("response") or {}
     if not isinstance(item, dict) or not item.get("team"):
-        return _espn_team_recent_statistics(str(league_id), season, team_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), team_name)
+        return _espn_team_recent_statistics(str(league_id), season, clean_name) or _thesportsdb_team_statistics(str(league_id), str(team_id), clean_name)
     fixtures, goals = item.get("fixtures") or {}, item.get("goals") or {}
     for_goals = goals.get("for") or {}
     against_goals = goals.get("against") or {}
-    return {
+    result = {
         "team": item["team"],
         "form": item.get("form") or "",
         "played": (fixtures.get("played") or {}).get("total"),
@@ -930,108 +1092,182 @@ def team_statistics(league_id: int, season: int, team_id: int, team_name: str = 
         "goals_against": against_goals.get("total"),
         "goals_for_avg": for_goals.get("average", {}).get("total"),
         "goals_against_avg": against_goals.get("average", {}).get("total"),
+        "rank": None,
+        "points": None,
         "clean_sheets": (item.get("clean_sheet") or {}).get("total"),
         "failed_to_score": (item.get("failed_to_score") or {}).get("total"),
         "league": item.get("league") or {},
         "source": "API-Football",
     }
+    return _enrich_rank_and_points(result, str(league_id), clean_name or str((item.get("team") or {}).get("name") or ""))
 
 
 def _espn_team_recent_statistics(league_id: str, season: int, team_name: str) -> dict[str, Any] | None:
-    """Use an honest last-five-match comparison if the season-stat plan is unavailable."""
-    league = ESPN_SOCCER_LEAGUES.get(str(league_id))
-    if not league or not team_name.strip():
+    """Return official standings (rank/points/totals) merged with recent 5-match form from ESPN."""
+    clean_name = _clean_team_name_input(team_name)
+    league = _resolve_espn_slug(str(league_id))
+    if not clean_name:
         return None
-    espn_team_id = _espn_team_id(league, team_name)
+    espn_team_id = _espn_team_id(league, clean_name) if league else None
     if not espn_team_id:
         for alternate_league in ESPN_LOGO_LOOKUP_LEAGUES.get(str(league_id), []):
-            espn_team_id = _espn_team_id(alternate_league, team_name)
+            espn_team_id = _espn_team_id(alternate_league, clean_name)
             if espn_team_id:
                 league = alternate_league
                 break
+    standing_row, standing_slug = _espn_standings_for_team(str(league_id), clean_name, espn_team_id=espn_team_id or "")
+    if not espn_team_id and standing_row:
+        espn_team_id = str(standing_row.get("team_id") or "")
+        if standing_slug:
+            league = standing_slug
     if not espn_team_id:
+        found = _search_espn_team(clean_name, preferred_slug=league)
+        if found:
+            espn_team_id = found["id"]
+            league = found["slug"]
+    if not espn_team_id and not standing_row:
         return None
-    cache_key = f"espn:team-recent-stats:{league}:{espn_team_id}:{season}"
+
+    cache_key = f"espn:team-stats-v2:{league}:{espn_team_id}:{season}:{_normalized_team_name(clean_name)}"
     now = time.monotonic()
     with _cache_lock:
         cached = _cache.get(cache_key)
         if cached and cached[0] > now:
             return cached[1]
-    try:
-        schedule = _espn_json(
-            "https://site.api.espn.com/apis/site/v2/sports/soccer/"
-            f"{league}/teams/{espn_team_id}/schedule?season={season}"
-        )
-    except FootballAPIError:
-        return None
 
     results = []
-    for event in schedule.get("events") or []:
-        competition = next(iter(event.get("competitions") or []), {})
-        status = (competition.get("status") or {}).get("type") or {}
-        if not status.get("completed"):
-            continue
-        competitors = competition.get("competitors") or []
-        home = next((item for item in competitors if item.get("homeAway") == "home"), None)
-        away = next((item for item in competitors if item.get("homeAway") == "away"), None)
-        if not home or not away:
-            continue
-        home_score, away_score = _espn_score(home.get("score")), _espn_score(away.get("score"))
-        if home_score is None or away_score is None:
-            continue
-        home_team, away_team = home.get("team") or {}, away.get("team") or {}
-        is_home = str(home_team.get("id") or "") == espn_team_id
-        if not is_home and str(away_team.get("id") or "") != espn_team_id:
-            continue
-        scored, conceded = (home_score, away_score) if is_home else (away_score, home_score)
-        result = "W" if scored > conceded else "D" if scored == conceded else "L"
-        results.append({"date": str(event.get("date") or ""), "scored": scored, "conceded": conceded, "result": result})
+    if league and espn_team_id:
+        try:
+            schedule = _espn_json(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+                f"{league}/teams/{espn_team_id}/schedule?season={season}"
+            )
+        except FootballAPIError:
+            schedule = {}
+        for event in schedule.get("events") or []:
+            competition = next(iter(event.get("competitions") or []), {})
+            status = (competition.get("status") or {}).get("type") or {}
+            if not status.get("completed"):
+                continue
+            competitors = competition.get("competitors") or []
+            home = next((item for item in competitors if item.get("homeAway") == "home"), None)
+            away = next((item for item in competitors if item.get("homeAway") == "away"), None)
+            if not home or not away:
+                continue
+            home_score, away_score = _espn_score(home.get("score")), _espn_score(away.get("score"))
+            if home_score is None or away_score is None:
+                continue
+            home_team, away_team = home.get("team") or {}, away.get("team") or {}
+            is_home = str(home_team.get("id") or "") == espn_team_id
+            if not is_home and str(away_team.get("id") or "") != espn_team_id:
+                continue
+            scored, conceded = (home_score, away_score) if is_home else (away_score, home_score)
+            result_letter = "W" if scored > conceded else "D" if scored == conceded else "L"
+            results.append({"date": str(event.get("date") or ""), "scored": scored, "conceded": conceded, "result": result_letter})
+
     results.sort(key=lambda row: row["date"], reverse=True)
     sample = results[:5]
-    if not sample:
+    if not sample and not standing_row:
         return None
-    played = len(sample)
-    goals_for = sum(row["scored"] for row in sample)
-    goals_against = sum(row["conceded"] for row in sample)
-    wins = sum(row["result"] == "W" for row in sample)
-    draws = sum(row["result"] == "D" for row in sample)
-    losses = sum(row["result"] == "L" for row in sample)
-    catalog_team = next(
-        (team for team in _espn_team_catalog(league) if str(team.get("id") or "") == espn_team_id),
-        {},
+
+    catalog_team = (
+        next((team for team in _espn_team_catalog(league) if str(team.get("id") or "") == espn_team_id), {})
+        if league and espn_team_id
+        else {}
     )
     logos = catalog_team.get("logos") or []
+    team_display = (
+        (standing_row or {}).get("name")
+        or catalog_team.get("displayName")
+        or clean_name
+    )
+    team_logo = (
+        (standing_row or {}).get("logo")
+        or catalog_team.get("logo")
+        or (logos[0].get("href") if logos else "")
+        or ""
+    )
+
+    if sample:
+        s_played = len(sample)
+        s_gf = sum(row["scored"] for row in sample)
+        s_ga = sum(row["conceded"] for row in sample)
+        s_wins = sum(row["result"] == "W" for row in sample)
+        s_draws = sum(row["result"] == "D" for row in sample)
+        s_losses = sum(row["result"] == "L" for row in sample)
+        form = "".join(row["result"] for row in reversed(sample))
+        clean_sheets = sum(row["conceded"] == 0 for row in sample)
+        failed_to_score = sum(row["scored"] == 0 for row in sample)
+    else:
+        s_played = s_gf = s_ga = s_wins = s_draws = s_losses = None
+        form = ""
+        clean_sheets = None
+        failed_to_score = None
+
+    has_table = standing_row is not None and (
+        standing_row.get("rank") is not None or standing_row.get("points") is not None
+    )
+    played = (standing_row or {}).get("played") if has_table and (standing_row or {}).get("played") is not None else s_played
+    goals_for = (standing_row or {}).get("goals_for") if has_table and (standing_row or {}).get("goals_for") is not None else s_gf
+    goals_against = (standing_row or {}).get("goals_against") if has_table and (standing_row or {}).get("goals_against") is not None else s_ga
+    wins = (standing_row or {}).get("wins") if has_table and (standing_row or {}).get("wins") is not None else s_wins
+    draws = (standing_row or {}).get("draws") if has_table and (standing_row or {}).get("draws") is not None else s_draws
+    loses = (standing_row or {}).get("loses") if has_table and (standing_row or {}).get("loses") is not None else s_losses
+    gf_avg = (
+        (standing_row or {}).get("goals_for_avg")
+        if has_table and (standing_row or {}).get("goals_for_avg") is not None
+        else (round(s_gf / s_played, 2) if s_gf is not None and s_played else None)
+    )
+    ga_avg = (
+        (standing_row or {}).get("goals_against_avg")
+        if has_table and (standing_row or {}).get("goals_against_avg") is not None
+        else (round(s_ga / s_played, 2) if s_ga is not None and s_played else None)
+    )
+
     response = {
         "team": {
-            "id": espn_team_id,
-            "name": catalog_team.get("displayName") or team_name,
-            "logo": catalog_team.get("logo") or (logos[0].get("href") if logos else "") or "",
+            "id": espn_team_id or (standing_row or {}).get("team_id") or "",
+            "name": team_display,
+            "logo": team_logo,
         },
-        "form": "".join(row["result"] for row in reversed(sample)),
-        "played": played, "wins": wins, "draws": draws, "loses": losses,
-        "goals_for": goals_for, "goals_against": goals_against,
-        "goals_for_avg": round(goals_for / played, 2),
-        "goals_against_avg": round(goals_against / played, 2),
-        "rank": None, "points": None, "sample_points": wins * 3 + draws,
-        "goal_difference": goals_for - goals_against,
-        "clean_sheets": sum(row["conceded"] == 0 for row in sample),
-        "failed_to_score": sum(row["scored"] == 0 for row in sample),
+        "form": form,
+        "played": played,
+        "wins": wins,
+        "draws": draws,
+        "loses": loses,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "goals_for_avg": gf_avg,
+        "goals_against_avg": ga_avg,
+        "rank": (standing_row or {}).get("rank"),
+        "points": (standing_row or {}).get("points"),
+        "sample_points": (s_wins * 3 + s_draws) if s_wins is not None and s_draws is not None else None,
+        "goal_difference": (standing_row or {}).get("goal_difference") if has_table else ((s_gf - s_ga) if s_gf is not None and s_ga is not None else None),
+        "clean_sheets": clean_sheets,
+        "failed_to_score": failed_to_score,
         "league": {"id": league_id},
-        "source": f"ESPN · últimos {played} partidos",
+        "source": (
+            f"ESPN · tabla oficial y últimos {s_played} partidos"
+            if has_table and s_played
+            else "ESPN · tabla oficial de competición"
+            if has_table
+            else f"ESPN · últimos {s_played} partidos"
+        ),
     }
     with _cache_lock:
-        _cache[cache_key] = (time.monotonic() + 30 * 60, response)
+        _cache[cache_key] = (time.monotonic() + 20 * 60, response)
     return response
 
 
 def _thesportsdb_team_statistics(league_id: str, team_id: str, team_name: str = "") -> dict[str, Any]:
+    clean_name = _clean_team_name_input(team_name)
     table_rows = []
     try:
         table_rows = _thesportsdb_top_teams(league_id)
     except FootballAPIError:
         pass
     rows = table_rows or _thesportsdb_season_leaders(league_id)
-    normalized_name = " ".join(team_name.casefold().split())
+    normalized_name = " ".join(clean_name.casefold().split())
     row = next((item for item in rows if item["team_id"] == team_id or (normalized_name and " ".join(item["name"].casefold().split()) == normalized_name)), None)
     if not row:
         if league_id in {"2", "61"}:
@@ -1039,12 +1275,10 @@ def _thesportsdb_team_statistics(league_id: str, team_id: str, team_name: str = 
             catalog_team = next((item for item in catalog if item["id"] == team_id or " ".join(item["name"].casefold().split()) == normalized_name), None)
         else:
             catalog_team = None
-        # Preserve both selected clubs in the comparison view without inventing
-        # current-season numbers when all real data providers are unavailable.
-        return {
+        fallback = {
             "team": {
                 "id": team_id,
-                "name": (catalog_team or {}).get("name") or team_name or "Equipo",
+                "name": (catalog_team or {}).get("name") or clean_name or "Equipo",
                 "logo": (catalog_team or {}).get("badge") or "",
             },
             "form": "",
@@ -1055,8 +1289,9 @@ def _thesportsdb_team_statistics(league_id: str, team_id: str, team_name: str = 
             "league": {"id": league_id},
             "source": "Estadísticas actuales no verificadas; no se muestran cifras inventadas",
         }
+        return _enrich_rank_and_points(fallback, league_id, fallback["team"]["name"])
     played, goals_for, goals_against = row.get("played"), row.get("goals_for"), row.get("goals_against")
-    return {
+    result = {
         "team": {"id": row["team_id"], "name": row["name"], "logo": row.get("logo")},
         "form": row.get("form") or "",
         "played": played,
@@ -1075,6 +1310,7 @@ def _thesportsdb_team_statistics(league_id: str, team_id: str, team_name: str = 
         "league": {"id": league_id},
         "source": "TheSportsDB · tabla de liga",
     }
+    return _enrich_rank_and_points(result, league_id, row["name"])
 
 
 def _thesportsdb_team_fixtures(team_id: str) -> list[dict[str, Any]]:
@@ -1408,6 +1644,8 @@ _PLAYER_QUERY_STOPWORDS = {
     "pena", "fijarse", "hace", "dispara", "remata", "tira", "anota", "marca", "mete", "asiste", "juega",
     "hara", "metera", "marcara", "anotara", "apuesto", "por", "cual", "mas", "menos", "over", "under", "btts", "ambos", "marcan", "gana", "ganar", "empate", "victoria",
     "vienen", "viene", "estan", "esta", "juegan", "entre", "contra", "hoy", "sera",
+    "alineacion", "alineaciones", "titular", "titulares", "once", "inicial", "formacion",
+    "rentable", "rentables", "quienes", "muestra", "dame", "ver", "ambos",
 }
 
 _GENERIC_NAME_TOKENS = {
@@ -1427,7 +1665,10 @@ def _extract_player_candidates(message: str, known_team_names: set[str]) -> list
         cleaned = _plain_text(raw)
         if not cleaned or cleaned in seen or cleaned in known_team_names:
             return
-        tokens = [t for t in cleaned.split() if len(t) >= 3 and t not in _PLAYER_QUERY_STOPWORDS]
+        tokens = [
+            t for t in cleaned.split()
+            if len(t) >= 3 and t not in _PLAYER_QUERY_STOPWORDS and t not in known_team_names
+        ]
         if not tokens or len(tokens) > 3:
             return
         joined = " ".join(tokens)
@@ -1571,7 +1812,8 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
             if not dname:
                 continue
             dnorm = _plain_text(dname)
-            if norm not in dnorm and not all(tok in dnorm for tok in norm.split()):
+            d_tokens = set(dnorm.split())
+            if not all(tok in d_tokens for tok in norm.split()):
                 continue
             slug = str(item.get("league") or "").strip().lower()
             lid = _ESPN_SLUG_TO_LEAGUE_ID.get(slug, "") or (slug if slug and "." in slug and slug not in {"fifa.world", "uefa.nations"} else "")
@@ -1601,7 +1843,8 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
                 if not pname or not tname or tname.startswith("_Retired"):
                     continue
                 pnorm = _plain_text(pname)
-                if norm not in pnorm and not all(tok in pnorm for tok in norm.split()):
+                p_tokens = set(pnorm.split())
+                if not all(tok in p_tokens for tok in norm.split()):
                     continue
                 mapped = club_idx.get(_plain_text(tname))
                 if mapped:
@@ -1637,6 +1880,280 @@ def _search_player_club(player_query: str) -> dict[str, str] | None:
 
     with _cache_lock:
         _cache[cache_key] = (time.monotonic() + 6 * 60 * 60, result)
+    return result
+
+
+def _teams_match(team_a: str, team_b: str) -> bool:
+    """Compara dos nombres de club tolerando variaciones (Real Madrid vs Real Madrid C.F., PSG, Man City)."""
+    na = _normalized_team_name(_clean_team_name_input(team_a))
+    nb = _normalized_team_name(_clean_team_name_input(team_b))
+    if not na or not nb:
+        return False
+    if na == nb or na in nb or nb in na:
+        return True
+    ta = {t for t in _plain_text(team_a).split() if len(t) >= 3 and t not in {"fc", "cf", "ac", "sc", "club", "de", "la", "el"}}
+    tb = {t for t in _plain_text(team_b).split() if len(t) >= 3 and t not in {"fc", "cf", "ac", "sc", "club", "de", "la", "el"}}
+    return bool(ta and tb and (ta <= tb or tb <= ta))
+
+
+def validate_players_for_match(
+    text: str,
+    active_teams: list[dict[str, str]],
+    extra_players: list[str] | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """
+    Valida si los jugadores mencionados pertenecen a los equipos del partido activo.
+    Devuelve `(valid_players, mismatched_players)` donde `mismatched_players` detalla
+    el club real de cada jugador que no juega en ninguno de los dos equipos consultados.
+    """
+    if not active_teams:
+        return list(extra_players or []), []
+
+    team_tokens: set[str] = set()
+    for t in active_teams:
+        team_tokens.update(_plain_text(t.get("name", "")).split())
+
+    query = _plain_text(text)
+    candidates: list[str] = []
+    seen_cands: set[str] = set()
+
+    def _add_cand(name: str) -> None:
+        norm = _plain_text(name)
+        if norm and norm not in seen_cands and norm not in team_tokens:
+            seen_cands.add(norm)
+            candidates.append(name)
+
+    for star_alias in sorted(_STAR_PLAYER_TEAMS, key=lambda s: -len(s)):
+        if re.search(rf"\b{re.escape(star_alias)}\b", query):
+            _add_cand(star_alias)
+    for cand in _extract_player_candidates(text, team_tokens):
+        _add_cand(cand)
+    for ep in extra_players or []:
+        _add_cand(ep)
+
+    if not candidates:
+        return [], []
+
+    valid_players: list[str] = []
+    mismatched: list[dict[str, Any]] = []
+    seen_mismatch: set[str] = set()
+
+    with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
+        resolved_infos = list(pool.map(_search_player_club, candidates))
+
+    match_team_names = [t["name"] for t in active_teams if t.get("name")]
+    for cand, info in zip(candidates, resolved_infos):
+        if info and info.get("team"):
+            actual_team = info["team"]
+            player_label = info.get("player") or cand.title()
+            if any(_teams_match(actual_team, mt) for mt in match_team_names):
+                if player_label not in valid_players:
+                    valid_players.append(player_label)
+            else:
+                key = _plain_text(player_label)
+                if key not in seen_mismatch:
+                    seen_mismatch.add(key)
+                    mismatched.append({
+                        "player": player_label,
+                        "actual_team": actual_team,
+                        "league_id": info.get("league_id", ""),
+                        "match_teams": match_team_names,
+                    })
+        else:
+            if cand not in valid_players:
+                valid_players.append(cand)
+
+    return valid_players, mismatched
+
+
+def _translate_position(pos: str) -> str:
+    code = str(pos or "").strip().upper()
+    if code in {"G", "GK", "GOALKEEPER"}:
+        return "POR"
+    if code in {"D", "DF", "DEF", "DEFENDER", "CB", "LB", "RB", "WB", "CD"}:
+        return "DEF"
+    if code in {"M", "MF", "MID", "MIDFIELDER", "CM", "CDM", "CAM", "LM", "RM", "DM", "AM"}:
+        return "MED"
+    if code in {"F", "FW", "FWD", "ST", "CF", "LW", "RW", "STRIKER", "FORWARD", "ATTACKER"}:
+        return "DEL"
+    return code or "JUG"
+
+
+def team_lineup_report(
+    team_name: str,
+    league_id: str,
+    season: int | None = None,
+    event_id: str = "",
+) -> dict[str, Any] | None:
+    """
+    Obtiene la alineación oficial del partido si ya fue publicada en ESPN, o el último
+    XI titular registrado del equipo, cruzado con los jugadores más rentables recientes.
+    """
+    from datetime import datetime as _dt
+
+    target_season = season or _dt.now().year
+    league = _resolve_espn_slug(league_id)
+    if not team_name.strip():
+        return None
+    espn_team_id = _espn_team_id(league, team_name) if league else None
+    if not espn_team_id:
+        found = _search_espn_team(team_name, preferred_slug=league)
+        if found:
+            espn_team_id = found["id"]
+            league = found["slug"]
+    if not league or not espn_team_id:
+        return None
+
+    cache_key = f"espn:lineup:{league}:{espn_team_id}:{target_season}:{event_id}"
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    selected_roster: dict[str, Any] | None = None
+    lineup_status = "Último XI titular registrado (referencia previa al anuncio oficial)"
+    ref_match = ""
+    ref_date = ""
+
+    def _extract_roster_from_summary(ev_id: str) -> tuple[dict[str, Any] | None, str, str]:
+        try:
+            summ = _espn_json(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/summary?event={ev_id}")
+        except FootballAPIError:
+            return None, "", ""
+        rosters = summ.get("rosters") or []
+        header_comp = ((summ.get("header") or {}).get("competitions") or [{}])[0]
+        comp_date = str(header_comp.get("date") or "")[:10]
+        comp_names = [
+            str(((c.get("team") or {}).get("displayName") or ""))
+            for c in (header_comp.get("competitors") or [])
+        ]
+        comp_label = " vs ".join([n for n in comp_names if n])
+        for r in rosters:
+            r_team = r.get("team") or {}
+            if str(r_team.get("id") or "") == espn_team_id or _teams_match(str(r_team.get("displayName") or ""), team_name):
+                starters = [p for p in (r.get("roster") or []) if p.get("starter")]
+                if len(starters) >= 7:
+                    return r, comp_label, comp_date
+        return None, comp_label, comp_date
+
+    if event_id and str(event_id).isdigit() and len(str(event_id)) >= 7:
+        cand_roster, comp_label, comp_date = _extract_roster_from_summary(str(event_id))
+        if cand_roster:
+            selected_roster = cand_roster
+            lineup_status = "Alineación oficial confirmada del partido"
+            ref_match = comp_label
+            ref_date = comp_date
+
+    if selected_roster is None:
+        for yr in (target_season, target_season - 1):
+            try:
+                sched = _espn_json(
+                    f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{espn_team_id}/schedule?season={yr}"
+                )
+            except FootballAPIError:
+                continue
+            completed = []
+            for ev in sched.get("events") or []:
+                st = ((ev.get("competitions") or [{}])[0].get("status") or {}).get("type") or {}
+                if st.get("completed") and ev.get("id"):
+                    completed.append((str(ev.get("date") or ""), str(ev["id"])))
+            completed.sort(key=lambda x: x[0], reverse=True)
+            for _, ev_id in completed[:3]:
+                cand_roster, comp_label, comp_date = _extract_roster_from_summary(ev_id)
+                if cand_roster:
+                    selected_roster = cand_roster
+                    ref_match = comp_label
+                    ref_date = comp_date
+                    break
+            if selected_roster is not None:
+                break
+
+    if not selected_roster:
+        return None
+
+    player_stats_by_key: dict[str, dict[str, Any]] = {}
+    try:
+        events = recent_team_player_events(team_name, league, target_season, limit=5)
+    except Exception:
+        events = []
+    team_norm = _plain_text(team_name)
+    for ev in events:
+        for p in ev.get("players") or []:
+            p_team = _plain_text(str(p.get("team") or ""))
+            if team_norm and p_team and not _teams_match(team_name, str(p.get("team") or "")):
+                continue
+            pname = str(p.get("name") or "").strip()
+            if not pname:
+                continue
+            pkey = _plain_text(pname)
+            entry = player_stats_by_key.setdefault(pkey, {
+                "name": pname, "appearances": 0, "goals": 0, "assists": 0,
+                "shots": 0, "shots_on_target": 0, "matches_with_sot": 0, "matches_with_goal": 0,
+            })
+            g = int(p.get("goals") or 0)
+            a = int(p.get("assists") or 0)
+            s = int(p.get("shots") or 0)
+            sot = int(p.get("shots_on_target") or 0)
+            entry["appearances"] += 1
+            entry["goals"] += g
+            entry["assists"] += a
+            entry["shots"] += s
+            entry["shots_on_target"] += sot
+            if sot > 0:
+                entry["matches_with_sot"] += 1
+            if g > 0:
+                entry["matches_with_goal"] += 1
+
+    starters_out: list[dict[str, Any]] = []
+    substitutes_out: list[str] = []
+    profitable_candidates: list[dict[str, Any]] = []
+
+    for p in selected_roster.get("roster") or []:
+        pname = str((p.get("athlete") or {}).get("displayName") or "").strip()
+        if not pname:
+            continue
+        pos = _translate_position((p.get("position") or {}).get("abbreviation") or (p.get("position") or {}).get("displayName") or "")
+        jersey = str(p.get("jersey") or "")
+        if p.get("starter"):
+            st = player_stats_by_key.get(_plain_text(pname))
+            app = max(1, st["appearances"]) if st else 0
+            starter_item = {
+                "name": pname,
+                "position": pos,
+                "jersey": jersey,
+                "appearances": st["appearances"] if st else 0,
+                "goals": st["goals"] if st else 0,
+                "assists": st["assists"] if st else 0,
+                "shots": st["shots"] if st else 0,
+                "shots_on_target": st["shots_on_target"] if st else 0,
+                "goals_avg": round(st["goals"] / app, 2) if st else 0.0,
+                "shots_on_target_avg": round(st["shots_on_target"] / app, 2) if st else 0.0,
+                "matches_with_sot": st["matches_with_sot"] if st else 0,
+            }
+            starters_out.append(starter_item)
+            if pos != "POR" and st and st["appearances"] >= 2:
+                score_val = (st["goals"] * 3.0) + (st["shots_on_target"] * 1.4) + (st["assists"] * 1.8) + (st["shots"] * 0.4)
+                profitable_candidates.append({**starter_item, "_score": score_val})
+        else:
+            substitutes_out.append(f"{pname} ({pos})")
+
+    profitable_candidates.sort(key=lambda x: -x["_score"])
+    for item in profitable_candidates:
+        item.pop("_score", None)
+
+    result = {
+        "team": team_name,
+        "formation": str(selected_roster.get("formation") or "No especificada"),
+        "status": lineup_status,
+        "reference_match": ref_match,
+        "reference_date": ref_date,
+        "starters": starters_out,
+        "substitutes": substitutes_out[:7],
+        "profitable_players": profitable_candidates[:4],
+    }
+    with _cache_lock:
+        _cache[cache_key] = (time.monotonic() + 15 * 60, result)
     return result
 
 
@@ -1926,7 +2443,7 @@ def team_last5_report(
                     token_matches.append(entry)
             matched_players = exact_matches or token_matches
 
-            pool = matched_players or sorted(
+            pool = matched_players if player_query else sorted(
                 by_player.values(),
                 key=lambda x: (x["goals"], x["assists"], x["shots_on_target"], x["shots"]),
                 reverse=True,

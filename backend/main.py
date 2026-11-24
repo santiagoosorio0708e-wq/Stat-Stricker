@@ -57,9 +57,17 @@ from backend.football_api import (
     scheduled_fixtures,
     team_fixtures,
     team_last5_report,
+    team_lineup_report,
     team_statistics,
+    validate_players_for_match,
 )
 from backend.llm_client import LLMClient, LLMError, OpenAIClient, get_llm_client
+from backend.langchain_pipeline import (
+    StatStrikerEmbeddings,
+    build_chat_chain,
+    build_text_extraction_chain,
+    retrieve_documents_lcel,
+)
 from backend.vector_store import VectorStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -87,6 +95,7 @@ async def lifespan(app: FastAPI):
     logger.info("SQLite listo en %s", settings.sqlite_path)
 
     embedder = get_embedding_provider(settings)
+    app.state.lc_embeddings = StatStrikerEmbeddings(embedder)
     app.state.vector_store = VectorStore(settings.chroma_path, settings.chroma_collection, embedder)
     logger.info("ChromaDB listo (%d fragmentos, embeddings=%s)", app.state.vector_store.count(), embedder.name)
 
@@ -190,10 +199,23 @@ def _local_fallback_answer(
     chunks: list[Any],
     match: ChatFixtureContext | None = None,
     live_reports: list[dict[str, Any]] | None = None,
+    mismatched_players: list[dict[str, Any]] | None = None,
 ) -> str:
     """Respuesta estructurada con los últimos 5 partidos si el LLM externo no responde."""
+    if mismatched_players:
+        notices = [
+            f"⚠️ **Contexto de partido:** actualmente estamos analizando **{' vs '.join(m.get('match_teams') or ['el partido activo'])}**, "
+            f"y **{m['player']}** pertenece a **{m['actual_team']}** (no a los equipos de este partido), "
+            "por lo que no se muestran sus estadísticas aquí. Indica si quieres consultar un partido de su club."
+            for m in mismatched_players
+        ]
+        if not getattr(analysis, "wants_lineups", False) and not analysis.markets:
+            return "\n\n".join(notices)
+    else:
+        notices = []
+
     if live_reports:
-        sections: list[str] = [
+        sections: list[str] = notices + [
             "### 📊 Análisis y recomendación (datos verificados de los últimos 5 partidos)",
             "*(El modelo de lenguaje externo no respondió a tiempo; este resumen se construyó directamente con los datos reales recuperados.)*",
         ]
@@ -236,6 +258,25 @@ def _local_fallback_answer(
                 player_blocks.append("\n".join(p_rows))
         if player_blocks:
             sections.append("### 🏃 Estadísticas de jugador (últimos 5 partidos y promedios)\n" + "\n\n".join(player_blocks))
+
+        lineup_blocks: list[str] = []
+        for rep in live_reports:
+            lu = rep.get("lineup")
+            if not lu:
+                continue
+            starters_list = ", ".join(f"{s['name']} ({s['position']})" for s in (lu.get("starters") or []))
+            prof_list = "\n".join(
+                f"- **{pp['name']}** ({pp['position']}): {pp['goals']} goles (prom {pp['goals_avg']}), "
+                f"{pp['shots_on_target']} tiros al arco (prom {pp['shots_on_target_avg']})"
+                for pp in (lu.get("profitable_players") or [])
+            )
+            lineup_blocks.append(
+                f"**{lu['team']} — {lu.get('status')} (Formación {lu.get('formation')}):**\n"
+                f"{starters_list}\n"
+                + (f"\n*Más rentables recientes:*\n{prof_list}" if prof_list else "")
+            )
+        if lineup_blocks:
+            sections.append("### 🧩 Alineaciones y jugadores más rentables\n" + "\n\n".join(lineup_blocks))
 
         avg_btts = round(sum((r.get("averages") or {}).get("btts_pct", 0) for r in live_reports) / len(live_reports))
         avg_over25 = round(sum((r.get("averages") or {}).get("over_2_5_pct", 0) for r in live_reports) / len(live_reports))
@@ -302,41 +343,35 @@ def _generate_with_fallback(
 ) -> tuple[str, LLMClient]:
     primary: LLMClient | None = request.app.state.llm
     fallback: LLMClient | None = request.app.state.llm_fallback
-    if primary is None:
-        if fallback is not None:
-            try:
-                return fallback.generate(
-                    system_prompt, user_prompt, image_b64=image_b64,
-                    image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
-                    use_web_search=use_web_search,
-                ), fallback
-            except LLMError as exc:
-                raise HTTPException(status_code=503, detail=_llm_error_message(exc)) from exc
+    if primary is None and fallback is None:
         raise HTTPException(status_code=503, detail=request.app.state.llm_error or "LLM no configurado.")
+
     try:
-        return primary.generate(
-            system_prompt, user_prompt, image_b64=image_b64,
-            image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
+        chain = build_chat_chain(
+            primary,
+            fallback,
+            image_b64=image_b64,
+            image_mime_type=image_mime_type,
+            max_output_tokens=max_output_tokens,
             use_web_search=use_web_search,
-        ), primary
+        )
+        ai_msg = chain.invoke({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        used_provider = (ai_msg.response_metadata or {}).get("provider")
+        used_client = fallback if (fallback is not None and used_provider == fallback.provider and primary is not fallback) else (primary or fallback)
+        assert used_client is not None
+        return str(ai_msg.content or "").strip(), used_client
     except LLMError as exc:
-        logger.warning("Falló el proveedor LLM principal (%s)", primary.provider)
-        if fallback is not None:
-            try:
-                return fallback.generate(
-                    system_prompt, user_prompt, image_b64=image_b64,
-                    image_mime_type=image_mime_type, max_output_tokens=max_output_tokens,
-                    use_web_search=use_web_search,
-                ), fallback
-            except LLMError:
-                logger.warning("También falló el proveedor LLM de respaldo (%s)", fallback.provider)
+        logger.warning("Falló la cadena LangChain LLM (%s)", exc)
         raise HTTPException(status_code=503, detail=_llm_error_message(exc)) from exc
 
 
 def _extract_bet_slip_entities(request: Request, image: ChatImageAttachment) -> dict[str, Any]:
-    """Lee equipos, jugadores, selecciones y cuotas de la foto para enriquecer el RAG."""
+    """Lee equipos, jugadores, selecciones y cuotas de la foto mediante LangChain + StrOutputParser."""
     primary: LLMClient | None = request.app.state.llm
+    fallback: LLMClient | None = request.app.state.llm_fallback
     if primary is not None and primary.provider == "mock":
+        return {}
+    if primary is None and fallback is None:
         return {}
     extract_sys = (
         "Extrae los datos visibles de la imagen de un boleto de apuesta deportiva. "
@@ -345,14 +380,17 @@ def _extract_bet_slip_entities(request: Request, image: ChatImageAttachment) -> 
         "Si un campo no aparece, déjalo como lista vacía."
     )
     try:
-        raw, _ = _generate_with_fallback(
-            request,
-            extract_sys,
-            "Extrae los equipos, jugadores, selecciones de apuesta, cuotas y stake visibles en esta imagen.",
+        chain = build_text_extraction_chain(
+            primary,
+            fallback,
             image_b64=image.data,
             image_mime_type=image.mime_type,
             max_output_tokens=300,
         )
+        raw = chain.invoke({
+            "system_prompt": extract_sys,
+            "user_prompt": "Extrae los equipos, jugadores, selecciones de apuesta, cuotas y stake visibles en esta imagen.",
+        })
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
         match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
         parsed = json.loads(match.group(0) if match else cleaned)
@@ -367,7 +405,7 @@ def _is_schedule_question(message: str) -> bool:
     asks_time = bool(re.search(r"\b(cu[aá]ndo|qu[eé] d[ií]a|a qu[eé] hora|fecha|horario|hora de inicio|kick.?off|schedule)\b", text))
     asks_analysis = bool(
         re.search(
-            r"\b(apuest\w*|recomiend\w*|estad[ií]stic\w*|promedio\w*|tabla\w*|gol(?:es)?|btts|ambos|cuota\w*|gana\w*|jugador\w*|analiz\w*|datos disponibles)\b",
+            r"\b(apuest\w*|recomiend\w*|estad[ií]stic\w*|promedio\w*|tabla\w*|gol(?:es)?|btts|ambos|cuota\w*|gana\w*|jugador\w*|analiz\w*|alineaci[oó]n\w*|titular\w*|once|rentable\w*|datos disponibles)\b",
             text,
         )
     )
@@ -413,6 +451,8 @@ class ChatResponse(BaseModel):
 # ====================================================================== #
 @app.get("/api/health")
 def health(request: Request) -> dict[str, Any]:
+    import langchain
+
     store: VectorStore = request.app.state.vector_store
     llm: LLMClient | None = request.app.state.llm
     return {
@@ -426,6 +466,7 @@ def health(request: Request) -> dict[str, Any]:
         "vector_db": {"engine": "chromadb", "documents": store.count()},
         "history_storage": {"engine": "SQLite", "persistent": True, "scope": "local"},
         "embedding_provider": settings.embedding_provider,
+        "orchestration": {"engine": "langchain", "pipeline": "LCEL", "version": langchain.__version__},
     }
 
 
@@ -702,6 +743,12 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         if sp not in resolved_players:
             resolved_players.append(sp)
 
+    # Validar si los jugadores mencionados pertenecen realmente al partido activo
+    valid_players, mismatched_players = validate_players_for_match(
+        analysis_text, resolved_teams, extra_players=resolved_players
+    )
+    resolved_players = valid_players
+
     # Alcance de la base vectorial: si hay match_context o equipos en vivo fuera de mock_matches,
     # evitamos mezclar fragmentos de otros partidos no relacionados.
     known_matches = store.list_matches()
@@ -729,6 +776,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         analysis.is_parlay = True
     if resolved_players:
         analysis.mentions_player = True
+    elif mismatched_players:
+        analysis.mentions_player = False
     if payload.match_context and relevant_matches:
         analysis.matched_match_ids = list(dict.fromkeys(
             [item["match_id"] for item in relevant_matches if item.get("match_id")]
@@ -739,7 +788,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             if t["name"] not in analysis.matched_teams:
                 analysis.matched_teams.append(t["name"])
 
-    # 3) Estadísticas reales de los últimos 5 partidos (equipos y, si aplica, jugadores)
+    # 3) Estadísticas reales de los últimos 5 partidos (equipos, jugadores y alineaciones si se piden)
     live_reports: list[dict[str, Any]] = []
     if resolved_teams:
         try:
@@ -747,21 +796,45 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         except (TypeError, ValueError):
             season_year = datetime.now().year
 
-        player_search_text = " ".join([analysis_text, *resolved_players]).strip()
+        player_search_text = " ".join(resolved_players).strip()
+        event_id = payload.match_context.id if payload.match_context else ""
 
         def _fetch_report(team_info: dict[str, str]) -> dict[str, Any] | None:
             try:
-                return team_last5_report(
+                rep = team_last5_report(
                     team_info["name"],
                     team_info.get("league_id", ""),
                     season=season_year,
-                    include_players=analysis.mentions_player,
+                    include_players=(analysis.mentions_player and not mismatched_players) or analysis.wants_lineups,
                     player_query=player_search_text,
                     limit=5,
                 )
             except Exception as exc:
                 logger.info("No se pudo cargar reporte últimos 5 de %s (%s)", team_info.get("name"), type(exc).__name__)
-                return None
+                rep = None
+            if analysis.wants_lineups:
+                try:
+                    lineup = team_lineup_report(
+                        team_info["name"],
+                        team_info.get("league_id", ""),
+                        season=season_year,
+                        event_id=event_id,
+                    )
+                except Exception:
+                    lineup = None
+                if lineup:
+                    if rep is None:
+                        rep = {
+                            "team": team_info["name"],
+                            "league_id": team_info.get("league_id", ""),
+                            "league_name": "Fútbol",
+                            "source": lineup.get("status", "ESPN"),
+                            "matches": [],
+                            "averages": {},
+                            "players": [],
+                        }
+                    rep["lineup"] = lineup
+            return rep
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             for rep in pool.map(_fetch_report, resolved_teams[:2]):
@@ -793,19 +866,27 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         store.check_compatibility()
         should_search_chroma = bool(matched_mock_ids) or not resolved_teams
         chunks = (
-            store.search(message, top_k=settings.rag_top_k, match_ids=matched_mock_ids or None)
+            retrieve_documents_lcel(
+                store,
+                message,
+                top_k=settings.rag_top_k,
+                match_ids=matched_mock_ids or None,
+                max_distance=settings.rag_max_distance,
+            )
             if should_search_chroma else []
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     entity_matched = bool(matched_mock_ids)
-    if not entity_matched:
-        chunks = [c for c in chunks if c.distance <= settings.rag_max_distance]
     context_quality = assess_context_quality(chunks, entity_matched, has_live_reports=bool(live_reports))
 
     # 5) System Prompt dinámico + prompt de usuario con datos de últimos 5 partidos, RAG y memoria
-    system_prompt, active_rules = build_system_prompt(analysis, context_quality)
+    system_prompt, active_rules = build_system_prompt(
+        analysis,
+        context_quality,
+        has_mismatched_player=bool(mismatched_players and not resolved_players),
+    )
     if live_reports and "ultimos_5_partidos" not in active_rules:
         active_rules.append("ultimos_5_partidos")
     sources = [c.to_source() for c in chunks]
@@ -818,7 +899,14 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             "similarity": 1.0,
         })
     history = database.get_history(payload.session_id, limit=settings.history_turns)
-    user_prompt = build_user_prompt(message, chunks, history, analysis, live_reports=live_reports)
+    user_prompt = build_user_prompt(
+        message,
+        chunks,
+        history,
+        analysis,
+        live_reports=live_reports,
+        mismatched_players=mismatched_players if not resolved_players else None,
+    )
     if payload.match_context:
         match = payload.match_context
         kickoff = match.kickoff or "fecha y hora no disponibles"
@@ -851,7 +939,13 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     except HTTPException as exc:
         if exc.status_code != 503:
             raise
-        answer = _local_fallback_answer(analysis, chunks, payload.match_context, live_reports=live_reports)
+        answer = _local_fallback_answer(
+            analysis,
+            chunks,
+            payload.match_context,
+            live_reports=live_reports,
+            mismatched_players=mismatched_players if not resolved_players else None,
+        )
         provider = "local-fallback"
     if not answer:
         answer = "No he podido generar un análisis en este momento. Inténtalo de nuevo."

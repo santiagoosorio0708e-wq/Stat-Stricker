@@ -1,6 +1,8 @@
 package com.statstriker.gateway.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.statstriker.gateway.config.GatewayProperties;
+import java.net.URI;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,15 +18,19 @@ public class AiEngineClient {
     private static final Logger log = LoggerFactory.getLogger(AiEngineClient.class);
 
     private final RestClient restClient;
+    private final String baseUrl;
 
-    public AiEngineClient(RestClient aiEngineRestClient) {
+    public AiEngineClient(RestClient aiEngineRestClient, GatewayProperties props) {
         this.restClient = aiEngineRestClient;
+        String url = props.aiEngineUrl() != null ? props.aiEngineUrl().trim() : "http://127.0.0.1:8012";
+        this.baseUrl = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
     public JsonNode getJson(String pathAndQuery) {
+        URI targetUri = URI.create(baseUrl + pathAndQuery);
         try {
             return restClient.get()
-                .uri(pathAndQuery)
+                .uri(targetUri)
                 .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
                 .body(JsonNode.class);
@@ -32,7 +38,7 @@ public class AiEngineClient {
             log.debug("Reintentando GET {} tras fallo transitorio: {}", pathAndQuery, ex.getClass().getSimpleName());
             sleepQuietly(250);
             return restClient.get()
-                .uri(pathAndQuery)
+                .uri(targetUri)
                 .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
                 .body(JsonNode.class);
@@ -41,7 +47,7 @@ public class AiEngineClient {
 
     public JsonNode postJson(String path, JsonNode body) {
         return restClient.post()
-            .uri(path)
+            .uri(URI.create(baseUrl + path))
             .contentType(MediaType.APPLICATION_JSON)
             .accept(MediaType.APPLICATION_JSON)
             .body(body)
@@ -51,7 +57,7 @@ public class AiEngineClient {
 
     public JsonNode deleteJson(String path) {
         return restClient.delete()
-            .uri(path)
+            .uri(URI.create(baseUrl + path))
             .accept(MediaType.APPLICATION_JSON)
             .retrieve()
             .body(JsonNode.class);

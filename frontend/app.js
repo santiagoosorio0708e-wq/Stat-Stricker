@@ -127,7 +127,12 @@ function saveConversations() { localStorage.setItem(CONVERSATIONS_KEY, JSON.stri
 function activeConversation() { return conversations.find((item) => item.id === sessionId); }
 function restoreFixtureContext(context) {
   if (!context) return null;
-  return { ...context, time: parseFixtureTime(context.time), homeLogo: context.homeLogo || context.home_logo || "", awayLogo: context.awayLogo || context.away_logo || "" };
+  return { ...context, time: parseFixtureTime(context.time || context.kickoff), homeLogo: context.homeLogo || context.home_logo || "", awayLogo: context.awayLogo || context.away_logo || "" };
+}
+function formatMatchKickoff(value) {
+  const parsed = parseFixtureTime(value);
+  if (parsed) return parsed.toISOString();
+  return typeof value === "string" ? value : "";
 }
 function renderConversations() {
   const picker = $("#conversation-picker");
@@ -788,9 +793,10 @@ async function sendMessage(text, { retry = false } = {}) {
     const needsFixtureLookup = /\b(cuando|que dia|a que hora|fecha|horario|proxim[oa]? partido|analiza (?:el )?partido|partido de|vs|contra)\b/.test(normalizedMessage);
     if (!matchContext && needsFixtureLookup) matchContext = await findNextFixtureForMessage(message);
     if (!matchContext && !/\b(vs|contra)\b/.test(normalizedMessage)) {
-      matchContext = activeConversation()?.matchContext || lastFixtureContext;
+      matchContext = restoreFixtureContext(activeConversation()?.matchContext || lastFixtureContext);
     }
     if (matchContext) {
+      matchContext = restoreFixtureContext(matchContext);
       lastFixtureContext = matchContext;
       const conversation = conversations.find((item) => item.id === requestSessionId);
       if (conversation) { conversation.matchContext = matchContext; conversation.updatedAt = Date.now(); saveConversations(); }
@@ -806,7 +812,7 @@ async function sendMessage(text, { retry = false } = {}) {
           id: matchContext.id, home: matchContext.home, away: matchContext.away,
           home_logo: matchContext.homeLogo, away_logo: matchContext.awayLogo,
           competition: matchContext.competition,
-          kickoff: matchContext.time?.toISOString() || "",
+          kickoff: formatMatchKickoff(matchContext.time || matchContext.kickoff),
           status: matchContext.status,
         } : null,
       }),
@@ -1643,14 +1649,14 @@ function renderTeamComparison(home, away) {
   const recentSample = String(home.source || "").includes("últimos") && String(away.source || "").includes("últimos");
   const stats = [
     ["Posición de liga", home.rank, away.rank],
-    [recentSample ? "Puntos en la muestra" : "Puntos", recentSample ? home.sample_points : home.points, recentSample ? away.sample_points : away.points],
-    [recentSample ? "Partidos en la muestra" : "Partidos jugados", home.played, away.played], ["Victorias", home.wins, away.wins],
+    [recentSample && home.points == null && away.points == null ? "Puntos en la muestra" : "Puntos", home.points ?? (recentSample ? home.sample_points : null), away.points ?? (recentSample ? away.sample_points : null)],
+    [recentSample && home.points == null && away.points == null ? "Partidos en la muestra" : "Partidos jugados", home.played, away.played], ["Victorias", home.wins, away.wins],
     ["Goles a favor", home.goals_for, away.goals_for], ["Goles en contra", home.goals_against, away.goals_against],
     ["Promedio de goles a favor", home.goals_for_avg, away.goals_for_avg], ["Porterías a cero", home.clean_sheets, away.clean_sheets],
   ];  const teamCard = (team) => {
     const logo = safeImage(team.team?.logo);
     const fallbackLogo = safeImage(team.team?.fallback_logo);
-    const name = String(team.team?.name || "Equipo");
+    const name = String(team.team?.name || "Equipo").replace(/%20/g, " ");
     const form = team.form ? `<div class="comparison-form"><span>Forma reciente</span><b>${escapeHtml(team.form)}</b></div>` : "";
     const badge = logo
       ? `<img class="comparison-team-badge" src="${logo}" data-fallback="${fallbackLogo}" data-initial="${escapeHtml(name.slice(0,1))}" alt="Escudo de ${escapeHtml(name)}" loading="lazy" referrerpolicy="no-referrer">`
@@ -1948,13 +1954,31 @@ document.addEventListener("error", (event) => {
   const fallback = document.createElement("span"); fallback.className = "team-placeholder"; fallback.textContent = "⚽"; image.replaceWith(fallback);
 }, true);
 
+function hideSplashScreen() {
+  const splash = $("#splash-screen");
+  if (!splash || splash.classList.contains("is-hidden")) return;
+  splash.classList.add("is-hidden");
+  window.setTimeout(() => splash.remove(), 500);
+}
+const splashMinWait = new Promise((resolve) => window.setTimeout(resolve, 1150));
+window.setTimeout(hideSplashScreen, 2600);
+
 renderLeagues();
 renderConversations();
 lastFixtureContext = restoreFixtureContext(activeConversation()?.matchContext);
 (async () => {
-  await loadHealth();
-  await syncBackendSessions();
-  await loadHistory();
+  try {
+    await Promise.all([
+      (async () => {
+        await loadHealth();
+        await syncBackendSessions();
+        await loadHistory();
+      })(),
+      splashMinWait,
+    ]);
+  } finally {
+    hideSplashScreen();
+  }
   await loadFootballLeagues();
   await initTeamComparison();
   if (!catalog[selectedLeague.id]) await loadLeague(selectedLeague.id);

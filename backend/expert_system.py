@@ -46,6 +46,7 @@ class QueryAnalysis:
     markets: list[str] = field(default_factory=list)
     is_parlay: bool = False
     mentions_player: bool = False
+    wants_lineups: bool = False
     seeks_value_odds: bool = False
     has_image: bool = False
     risk_profile: str = "moderado"
@@ -82,6 +83,10 @@ MARKET_LABELS: dict[str, str] = {
 }
 
 RE_PARLAY = re.compile(r"combinada|parlay|acumulada|combinar")
+RE_LINEUPS = re.compile(
+    r"\b(alineaci[oó]n(?:es)?|titular(?:es)?|once(?:\s+inicial)?|formaci[oó]n(?:es)?|"
+    r"quien(?:es)?\s+(?:juegan|salen|arrancan)|jugadores\s+(?:mas\s+)?rentables?)\b"
+)
 RE_PLAYER = re.compile(
     r"\b(jugador|jugadores|goleador|anota\w*|marcar[aá]|har[aá]\s+(?:un\s+)?gol|mete\w*\s+(?:un\s+)?gol|"
     r"gol\s+de\s+|asistencia|asistencias|tiros?|remat\w*|dispar\w*|al arco|a puerta|prop(?:s)?|"
@@ -133,6 +138,7 @@ def analyze_query(message: str, known_matches: list[dict[str, Any]]) -> QueryAna
         RE_PARLAY.search(text) or len(analysis.markets) >= 2 or len(analysis.matched_match_ids) >= 2
     )
     analysis.mentions_player = bool(RE_PLAYER.search(text))
+    analysis.wants_lineups = bool(RE_LINEUPS.search(text))
     analysis.seeks_value_odds = bool(RE_VALUE_ODDS.search(text))
 
     # --- Perfil de riesgo ---
@@ -191,6 +197,21 @@ La consulta involucra rendimiento individual de jugadores (goles, asistencias, t
 - Muestra una tabla Markdown con los últimos partidos disponibles del jugador (Fecha | Partido | Goles | Asistencias | Tiros | Tiros al arco) y una fila final con sus **totales y promedios por partido**.
 - Analiza explícitamente su frecuencia de remates al arco (en cuántos de los últimos partidos remató ≥ 1 y ≥ 2 veces al arco, y su promedio de tiros totales vs tiros al arco).
 - Recomienda el mercado más objetivo según sus promedios reales (p. ej. `+1.5 tiros al arco` si promedia ≥ 1.6 al arco; `+0.5 tiros al arco` si su promedio está entre 0.8 y 1.5; `gol en cualquier momento` si marcó con regularidad; o evitar si sus minutos/remates son bajos)."""
+
+PLAYER_MISMATCH_MODULE = """\
+## MÓDULO CRÍTICO: JUGADOR DE OTRO EQUIPO (DESAJUSTE DE CONTEXTO)
+En `<desajuste_jugador>` se detectó que el usuario preguntó por un jugador que **NO pertenece a ninguno de los dos equipos del partido activo**:
+- **ESTRICTAMENTE PROHIBIDO mostrar, calcular o inventar estadísticas de ese jugador fuera de contexto.**
+- **NO respondas con las estadísticas de otro jugador cualquiera** para rellenar.
+- Informa con claridad al usuario: *"Actualmente estamos analizando el partido **[Equipo A vs Equipo B]**, pero **[Jugador]** juega en **[Club real]**, no en ninguno de los dos equipos de este encuentro."*
+- Pregúntale si desea cambiar de consulta para analizar el partido de **[Club real]** o continuar con jugadores propios del partido activo."""
+
+LINEUPS_MODULE = """\
+## MÓDULO: ALINEACIONES Y JUGADORES MÁS RENTABLES
+El usuario pidió conocer las **alineaciones** de ambos equipos y por cuáles jugadores es más rentable apostar:
+- Muestra claramente la **alineación de AMBOS equipos** usando `<alineaciones_y_jugadores_rentables>` (especificando la formación, el XI titular con su posición e indicando honestamente si es *Alineación oficial confirmada* o *Último XI titular registrado* si el encuentro aún no ha publicado alineación oficial).
+- NO inventes ni modifiques nombres de la alineación.
+- Destaca en una tabla o lista comparativa a **los jugadores más rentables para apostar** de ambos equipos (p. ej., `Gol en cualquier momento`, `+0.5 / +1.5 tiros al arco` o `Asistencia`), justificando exactamente con sus goles, asistencias y tiros al arco de los últimos 5 partidos, probabilidad estimada, cuota mínima justa (`1/p`) y nivel de riesgo."""
 
 VALUE_ODDS_MODULE = """\
 ## MÓDULO PRIORITARIO: CUOTA OBJETIVA DE ALTO VALOR (NO LA MENOR CUOTA)
@@ -306,7 +327,12 @@ def assess_context_quality(
     return "low"
 
 
-def build_system_prompt(analysis: QueryAnalysis, context_quality: str) -> tuple[str, list[str]]:
+def build_system_prompt(
+    analysis: QueryAnalysis,
+    context_quality: str,
+    *,
+    has_mismatched_player: bool = False,
+) -> tuple[str, list[str]]:
     """
     Ensambla el System Prompt evaluando reglas condicionales.
     Devuelve (prompt, lista_de_reglas_activadas) para trazabilidad en la UI.
@@ -318,6 +344,11 @@ def build_system_prompt(analysis: QueryAnalysis, context_quality: str) -> tuple[
     if analysis.responsible_gambling_alert:
         sections.append(RESPONSIBLE_GAMBLING_MODULE)
         active.append("juego_responsable")
+
+    # Regla: desajuste de jugador respecto al partido activo
+    if has_mismatched_player:
+        sections.append(PLAYER_MISMATCH_MODULE)
+        active.append("desajuste_jugador_partido")
 
     # Regla: calidad del contexto RAG (si hay foto adjunta, el propio boleto aporta contexto visual)
     effective_quality = "good" if (context_quality == "none" and analysis.has_image) else context_quality
@@ -340,8 +371,13 @@ def build_system_prompt(analysis: QueryAnalysis, context_quality: str) -> tuple[
             sections.append(VALUE_ODDS_MODULE)
             active.append("valor_cuota_objetiva")
 
+        # Regla: alineaciones y jugadores más rentables
+        if analysis.wants_lineups:
+            sections.append(LINEUPS_MODULE)
+            active.append("alineaciones_y_rentabilidad")
+
         # Regla: jugador
-        if analysis.mentions_player:
+        if analysis.mentions_player and not has_mismatched_player:
             sections.append(PLAYER_MODULE)
             active.append("estadisticas_jugador")
 
@@ -427,6 +463,27 @@ def format_live_reports_context(reports: list[dict[str, Any]]) -> str:
                         f"      - {pm['date']} | {pm['match']} ({pm['score']}): "
                         f"{pm['goals']}G, {pm['assists']}A, {pm['shots_on_target']}/{pm['shots']} tiros al arco"
                     )
+        lineup = rep.get("lineup")
+        if lineup:
+            lines.append(
+                f"Alineación ({lineup.get('status', 'XI')}) · Formación {lineup.get('formation', '—')}"
+                + (f" · Ref: {lineup.get('reference_match')} ({lineup.get('reference_date')})" if lineup.get("reference_match") else "")
+            )
+            starters_txt = ", ".join(
+                f"#{s.get('jersey') or '?'} {s['name']} ({s['position']})"
+                for s in (lineup.get("starters") or [])
+            )
+            if starters_txt:
+                lines.append(f"  Titulares (11): {starters_txt}")
+            prof = lineup.get("profitable_players") or []
+            if prof:
+                lines.append("  Candidatos más rentables según los últimos 5 partidos:")
+                for pp in prof:
+                    lines.append(
+                        f"    * {pp['name']} ({pp['position']}): {pp['appearances']} PJ, {pp['goals']} goles (prom {pp['goals_avg']}), "
+                        f"{pp['assists']} asist., {pp['shots']} tiros, {pp['shots_on_target']} al arco (prom {pp['shots_on_target_avg']}, "
+                        f"≥1 al arco en {pp.get('matches_with_sot', 0)}/{pp['appearances']})"
+                    )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -437,9 +494,19 @@ def build_user_prompt(
     history: list[dict[str, Any]],
     analysis: QueryAnalysis,
     live_reports: list[dict[str, Any]] | None = None,
+    mismatched_players: list[dict[str, Any]] | None = None,
 ) -> str:
     """Construye el mensaje final que recibe el LLM."""
     parts: list[str] = []
+
+    if mismatched_players:
+        mm_lines = [
+            f"- Jugador consultado: {m['player']} | Club real: {m['actual_team']} | "
+            f"Partido activo: {' vs '.join(m.get('match_teams') or [])} "
+            "(NO pertenece a este partido; NO muestres sus estadísticas)."
+            for m in mismatched_players
+        ]
+        parts.append("<desajuste_jugador>\n" + "\n".join(mm_lines) + "\n</desajuste_jugador>")
 
     if live_reports:
         parts.append(

@@ -561,3 +561,17 @@ main#inicio{width:100%;max-width:none}
 .image-lightbox__img{max-width:min(94vw,1080px);max-height:88vh;border-radius:12px;border:1px solid rgba(255,255,255,.18);box-shadow:0 24px 60px rgba(0,0,0,.65);object-fit:contain;background:#091715}
 .image-lightbox__close{position:fixed;top:18px;right:22px;width:40px;height:40px;border:1px solid rgba(255,255,255,.22);border-radius:50%;background:rgba(15,32,30,.92);color:#e9f6f2;font-size:20px;line-height:1;cursor:pointer}
 @media(max-width:520px){.composer-mode{padding:0 6px;font-size:12px}.composer-mode select{font-size:12px}}
+.splash-screen{position:fixed;inset:0;z-index:2000;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 50% 42%,rgba(16,66,54,.96) 0%,rgba(6,24,20,.99) 55%,#04110e 100%);transition:opacity .45s ease,visibility .45s ease}
+.splash-screen.is-hidden{opacity:0;visibility:hidden;pointer-events:none}
+.splash-screen__card{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;animation:splashIn .55s cubic-bezier(.22,1,.36,1)}
+.splash-screen__logo{position:relative;display:grid;place-items:center;width:96px;height:96px;border-radius:26px;background:linear-gradient(155deg,#113e34,#09241f);border:1px solid rgba(32,216,155,.35);box-shadow:0 0 42px rgba(32,216,155,.22),inset 0 1px 0 rgba(255,255,255,.12)}
+.splash-screen__logo svg{position:relative;z-index:1;width:54px;height:54px;fill:#20d89b;filter:drop-shadow(0 0 14px rgba(32,216,155,.55))}
+.splash-screen__ring{position:absolute;inset:-8px;border-radius:32px;border:1.5px solid rgba(32,216,155,.28);animation:splashPulse 1.8s ease-in-out infinite}
+.splash-screen__brand{font-family:"Space Grotesk","Plus Jakarta Sans",sans-serif;font-size:clamp(28px,4vw,38px);font-weight:800;letter-spacing:-1px;color:#e9f6f2}
+.splash-screen__brand span{color:#20d89b}
+.splash-screen__tagline{max-width:340px;font-size:15px;font-weight:500;letter-spacing:.02em;color:#a9ccc1}
+.splash-screen__bar{width:190px;height:4px;margin-top:6px;border-radius:999px;background:rgba(255,255,255,.1);overflow:hidden}
+.splash-screen__bar span{display:block;width:45%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#20d89b,#43b9de);animation:splashSlide 1.15s ease-in-out infinite}
+@keyframes splashIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes splashPulse{0%,100%{transform:scale(1);opacity:.65}50%{transform:scale(1.06);opacity:.2}}
+@keyframes splashSlide{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
