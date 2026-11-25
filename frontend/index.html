@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=8" />
 </head>
 <body class="dashboard">
   <div class="splash-screen" id="splash-screen" role="status" aria-live="polite" aria-label="Cargando StatStriker">
@@ -35,7 +35,7 @@
         <a class="nav-link" href="#upcoming-view" data-view="upcoming">Predicciones</a>
         <a class="nav-link active" href="#chat" data-view="home">Asistente IA</a>
         <a class="nav-link" href="#advanced-view" data-view="advanced">Métricas</a>
-        <a class="nav-link" href="#management-view" data-view="management">Gestión &amp; BD</a>
+        <a class="nav-link" href="#management-view" data-view="management" hidden>Gestión &amp; BD</a>
       </nav>
       <span class="topbar-status"><i id="topbar-api-dot"></i><span id="topbar-api-label">Conectando</span></span>
       <button class="profile-button" type="button" aria-label="Perfil de usuario">♙</button>
@@ -207,24 +207,6 @@
           <p class="comparison-status" id="comparison-status" aria-live="polite">Selecciona una liga para cargar su plantilla.</p>
           <div class="comparison-results" id="comparison-results" aria-live="polite"><p class="detail-unavailable">La comparativa mostrará partidos jugados, victorias, goles y porterías a cero.</p></div>
         </section>
-        <section class="sql-analytics-panel" id="sql-analytics-panel" aria-labelledby="sql-analytics-title">
-          <div class="sql-analytics-head">
-            <div><p class="eyebrow">Consultas SQL reales (Spring Data JPA)</p><h2 id="sql-analytics-title">Dashboard Analítico e Indicadores</h2></div>
-            <div class="sql-filterbar">
-              <label>Desde<input type="date" id="sql-filter-from" /></label>
-              <label>Hasta<input type="date" id="sql-filter-to" /></label>
-              <label>Categoría<select id="sql-filter-category"><option value="">Todas</option></select></label>
-              <label>Prioridad<select id="sql-filter-priority"><option value="ALL">Todas</option><option value="ALTA">Alta</option><option value="MEDIA">Media</option><option value="BAJA">Baja</option></select></label>
-              <button class="comparison-submit" type="button" id="sql-filter-apply">Aplicar SQL</button>
-            </div>
-          </div>
-          <div class="sql-kpi-grid" id="sql-kpi-grid"><p class="loading-state">Calculando indicadores SQL…</p></div>
-          <div class="sql-charts-grid">
-            <article class="api-chart-card"><h4>Distribución por categoría y resolución</h4><div class="api-chart-rows" id="sql-category-chart"></div></article>
-            <article class="api-chart-card"><h4>Evolución semanal de casos</h4><div class="api-chart-rows" id="sql-weekly-chart"></div></article>
-            <article class="api-chart-card"><h4>Consultas IA por estado y fuentes</h4><div class="api-chart-rows" id="sql-ia-chart"></div></article>
-          </div>
-        </section>
         <div class="analytics-notice" id="analytics-source-note"><span>ⓘ</span><span>Cargando las métricas disponibles…</span></div>
         <div class="advanced-grid">
           <section class="metric-card ranking-card"><div class="metric-heading"><div><p class="eyebrow">Comparativa</p><h2>Equipos destacados</h2></div><span class="metric-unit">Muestra</span></div><p class="metric-caption">Ordenados por victorias en los últimos cinco partidos del dataset.</p><div class="team-ranking" id="analytics-team-ranking"><div class="loading-state"><span class="loader"></span> Cargando equipos…</div></div></section>
@@ -361,6 +343,6 @@
       <button class="mobile-nav-item" type="button" data-view="advanced" aria-label="Métricas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 3 3 6-7m-4 0h4v4"/></svg><span>Métricas</span></button>
     </nav>
   </div>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

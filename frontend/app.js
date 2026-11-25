@@ -986,7 +986,7 @@ function setView(view) {
     loadUpcomingFixtures();
     upcomingTimer = setInterval(loadUpcomingFixtures, 5 * 60_000);
   }
-  if (isAdvanced) { loadAnalytics(); loadFootballCharts(); loadSqlAnalytics(); }
+  if (isAdvanced) { loadAnalytics(); loadFootballCharts(); }
   if (isManagement) { loadManagementView(); }
   if (isProfile) renderProfile();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2007,7 +2007,7 @@ async function ensureMgmtMeta() {
     mgmtMeta = await api("/api/management/meta");
     const catOpts = mgmtMeta.categories.map((c) => `<option value="${escapeHtml(String(c.id))}">${escapeHtml(c.nombre)}</option>`).join("");
     ["#case-category", "#kb-category"].forEach((sel) => { const el = $(sel); if (el) el.innerHTML = catOpts; });
-    ["#case-filter-category", "#kb-filter-category", "#sql-filter-category"].forEach((sel) => {
+    ["#case-filter-category", "#kb-filter-category"].forEach((sel) => {
       const el = $(sel);
       if (el) el.innerHTML = `<option value="">Todas las categorías</option>${catOpts}`;
     });
@@ -2015,51 +2015,6 @@ async function ensureMgmtMeta() {
     if (userSel) userSel.innerHTML = mgmtMeta.users.map((u) => `<option value="${escapeHtml(String(u.id))}">${escapeHtml(u.nombre)} (${escapeHtml(u.area)})</option>`).join("");
   } catch { /* sin conexión JPA */ }
   return mgmtMeta;
-}
-function renderSqlBarRows(host, rows, labelKey, valueKey, extraFn = () => "") {
-  if (!host) return;
-  if (!rows || !rows.length) { host.innerHTML = `<p class="detail-unavailable">Sin registros para este filtro.</p>`; return; }
-  const max = Math.max(1, ...rows.map((r) => Number(r[valueKey]) || 0));
-  host.innerHTML = rows.map((r) => {
-    const val = Number(r[valueKey]) || 0;
-    const pct = Math.max(4, Math.round(val / max * 100));
-    return `<div class="api-chart-row"><div class="api-chart-label"><span>${escapeHtml(String(r[labelKey] || "—"))}</span><strong>${escapeHtml(String(val))}${extraFn(r)}</strong></div><div class="api-chart-track"><i style="width:${pct}%"></i></div></div>`;
-  }).join("");
-}
-async function loadSqlAnalytics() {
-  const grid = $("#sql-kpi-grid");
-  if (!grid) return;
-  await ensureMgmtMeta();
-  const params = new URLSearchParams();
-  const from = $("#sql-filter-from")?.value || "";
-  const to = $("#sql-filter-to")?.value || "";
-  const cat = $("#sql-filter-category")?.value || "";
-  const prio = $("#sql-filter-priority")?.value || "ALL";
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  if (cat) params.set("categoriaId", cat);
-  if (prio && prio !== "ALL") params.set("prioridad", prio);
-  try {
-    const data = await api(`/api/analytics/sql?${params.toString()}`);
-    const s = data.summary || {};
-    grid.innerHTML = [
-      ["Casos registrados", s.total_casos ?? 0, `${s.casos_resueltos ?? 0} resueltos`],
-      ["% de resolución", `${s.porcentaje_resolucion ?? 0}%`, "Calculado vía SQL"],
-      ["Tiempo prom. atención", `${s.tiempo_promedio_horas ?? 0} h`, "Casos resueltos"],
-      ["Calificación IA", `${s.calificacion_promedio ?? 0} ★`, `${s.total_calificaciones ?? 0} evaluaciones`],
-      ["Consultas IA", s.total_consultas_ia ?? 0, `${s.consultas_respondidas ?? 0} respondidas`],
-      ["Conocimiento activo", s.articulos_activos ?? 0, `${s.articulos_inactivos ?? 0} inactivos`],
-    ].map(([label, val, sub]) => `<div class="sql-kpi"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(val))}</strong><small>${escapeHtml(String(sub))}</small></div>`).join("");
-    renderSqlBarRows($("#sql-category-chart"), data.by_category, "nombre", "total", (r) => ` (${r.pct_resolucion || 0}% res.)`);
-    renderSqlBarRows($("#sql-weekly-chart"), data.weekly_trend, "semana", "total", (r) => ` (${r.resueltos || 0} res.)`);
-    const iaRows = [
-      ...(data.ia_status_distribution || []).map((r) => ({ nombre: `Estado ${r.estado}`, total: r.total })),
-      ...(data.top_articles || []).map((r) => ({ nombre: `Fuente: ${r.titulo}`, total: r.usos })),
-    ];
-    renderSqlBarRows($("#sql-ia-chart"), iaRows, "nombre", "total");
-  } catch (err) {
-    grid.innerHTML = `<p class="detail-unavailable">${escapeHtml(err.message || "No se pudo consultar la analítica SQL.")}</p>`;
-  }
 }
 async function loadCases() {
   const host = $("#cases-list");
@@ -2133,7 +2088,6 @@ async function loadManagementView() {
   await ensureMgmtMeta();
   await Promise.all([loadCases(), loadKnowledgeArticles()]);
 }
-$("#sql-filter-apply")?.addEventListener("click", loadSqlAnalytics);
 $("#case-new-toggle")?.addEventListener("click", () => {
   const f = $("#case-form");
   if (!f) return;
