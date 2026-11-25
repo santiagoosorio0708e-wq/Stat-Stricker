@@ -13,10 +13,13 @@ import java.text.Normalizer;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.caffeine.CaffeineCache;
@@ -27,12 +30,15 @@ import org.springframework.web.client.ResourceAccessException;
 @Service
 public class ChatOptimizationService {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatOptimizationService.class);
     private static final Pattern NEW_MATCHUP_PATTERN = Pattern.compile("\\b(vs|contra)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern MULTI_SPACE = Pattern.compile("\\s+");
 
     private final AiEngineClient aiClient;
     private final CacheManager cacheManager;
     private final ObjectMapper objectMapper;
+    private final KnowledgeAndCaseService knowledgeService;
+    private final ChatAuditAndRatingService auditService;
 
     private final AtomicLong chatCacheHits = new AtomicLong();
     private final AtomicLong chatCacheMisses = new AtomicLong();
@@ -40,10 +46,18 @@ public class ChatOptimizationService {
     private final AtomicLong totalAiCalls = new AtomicLong();
     private final AtomicLong totalAiLatencyMs = new AtomicLong();
 
-    public ChatOptimizationService(AiEngineClient aiClient, CacheManager cacheManager, ObjectMapper objectMapper) {
+    public ChatOptimizationService(
+        AiEngineClient aiClient,
+        CacheManager cacheManager,
+        ObjectMapper objectMapper,
+        KnowledgeAndCaseService knowledgeService,
+        ChatAuditAndRatingService auditService
+    ) {
         this.aiClient = aiClient;
         this.cacheManager = cacheManager;
         this.objectMapper = objectMapper;
+        this.knowledgeService = knowledgeService;
+        this.auditService = auditService;
     }
 
     public JsonNode processChat(JsonNode requestBody) {
@@ -73,7 +87,19 @@ public class ChatOptimizationService {
             }
         }
 
-        String cacheKey = hasImage ? null : buildChatCacheKey(sessionId, message, payload.get("match_context"));
+        // Inyectar artículos activos y verificados de la Base de Conocimiento (RF02)
+        long kbVersion = 0L;
+        try {
+            List<Map<String, Object>> activeKb = knowledgeService.findRelevantActiveKnowledge(message);
+            if (!activeKb.isEmpty()) {
+                payload.set("knowledge_context", objectMapper.valueToTree(activeKb));
+            }
+            kbVersion = knowledgeService.activeKnowledgeVersionHash();
+        } catch (Exception ex) {
+            log.debug("No se pudo consultar base de conocimiento JPA: {}", ex.getMessage());
+        }
+
+        String cacheKey = hasImage ? null : buildChatCacheKey(sessionId, message, payload.get("match_context"), kbVersion);
         Cache chatCache = cacheManager.getCache("chatResponses");
         if (cacheKey != null && chatCache != null) {
             JsonNode cached = chatCache.get(cacheKey, JsonNode.class);
@@ -85,17 +111,36 @@ public class ChatOptimizationService {
 
         chatCacheMisses.incrementAndGet();
         long startNs = System.nanoTime();
-        JsonNode response = aiClient.postJson("/api/chat", payload);
+        JsonNode response;
+        try {
+            response = aiClient.postJson("/api/chat", payload);
+        } catch (RuntimeException ex) {
+            try {
+                auditService.recordErrorInteraction(sessionId, message);
+            } catch (Exception auditEx) {
+                log.debug("No se pudo registrar error de consulta en JPA: {}", auditEx.getMessage());
+            }
+            throw ex;
+        }
         long elapsedMs = (System.nanoTime() - startNs) / 1_000_000L;
         totalAiCalls.incrementAndGet();
         totalAiLatencyMs.addAndGet(elapsedMs);
 
         if (response != null && response.isObject()) {
-            appendHistoryBackup(sessionId, message, imageNode, response);
+            ObjectNode mutableResp = (ObjectNode) response;
+            try {
+                ChatAuditAndRatingService.AuditResult audit = auditService.recordChatInteraction(sessionId, message, mutableResp);
+                mutableResp.put("consulta_id", audit.consultaId());
+                mutableResp.put("respuesta_id", audit.respuestaId());
+                mutableResp.put("consulta_estado", audit.consultaEstado());
+            } catch (Exception auditEx) {
+                log.warn("Auditoría JPA omitida en /api/chat sin afectar respuesta: {}", auditEx.getMessage());
+            }
+            appendHistoryBackup(sessionId, message, imageNode, mutableResp);
             if (cacheKey != null && chatCache != null) {
-                String provider = textOrDefault(response.get("provider"), "");
+                String provider = textOrDefault(mutableResp.get("provider"), "");
                 if (!"local-fallback".equals(provider)) {
-                    chatCache.put(cacheKey, response.deepCopy());
+                    chatCache.put(cacheKey, mutableResp.deepCopy());
                 }
             }
         }
@@ -106,6 +151,11 @@ public class ChatOptimizationService {
         Cache backupCache = cacheManager.getCache("sessionHistoryBackup");
         try {
             JsonNode liveHistory = aiClient.getJson(historyUri);
+            try {
+                auditService.enrichHistoryWithJpaMetadata(sessionId, liveHistory);
+            } catch (Exception ex) {
+                log.debug("No se pudo enriquecer historial con calificaciones JPA: {}", ex.getMessage());
+            }
             if (liveHistory != null && liveHistory.isArray() && backupCache != null) {
                 backupCache.put(sessionId, liveHistory.deepCopy());
             }
@@ -225,7 +275,14 @@ public class ChatOptimizationService {
         return metrics;
     }
 
-    private String buildChatCacheKey(String sessionId, String message, JsonNode matchContext) {
+    public void clearChatCache() {
+        Cache chatCache = cacheManager.getCache("chatResponses");
+        if (chatCache != null) {
+            chatCache.clear();
+        }
+    }
+
+    private String buildChatCacheKey(String sessionId, String message, JsonNode matchContext, long kbVersion) {
         String normalizedMsg = MULTI_SPACE.matcher(
             Normalizer.normalize(message.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")
@@ -236,7 +293,7 @@ public class ChatOptimizationService {
         String matchId = matchContext != null && matchContext.hasNonNull("id")
             ? matchContext.get("id").asText("")
             : "";
-        return sessionId + ":" + sha256(normalizedMsg + "|" + matchId);
+        return sessionId + ":" + sha256(normalizedMsg + "|" + matchId + "|" + kbVersion);
     }
 
     private static String textOrDefault(JsonNode node, String fallback) {

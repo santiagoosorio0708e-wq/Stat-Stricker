@@ -32,7 +32,6 @@
 6. [Uso y Características](#-uso-y-características)
 7. [Pruebas](#-pruebas)
 8. [Hoja de Ruta](#-hoja-de-ruta)
-9. [Contacto](#-contacto)
 
 </details>
 
@@ -243,12 +242,6 @@ curl -X POST http://127.0.0.1:8011/api/chat \
 - [ ] Re-ranking híbrido (BM25 + vectores)
 - [ ] Tests automatizados con `pytest` y evaluación RAG
 - [ ] Autenticación de usuarios y límites de bankroll
-
-## 📬 Contacto
-
-**Tu Nombre** · [@tu_usuario](https://github.com/tu-usuario) · tu.email@ejemplo.com
-
-Enlace del proyecto: [github.com/tu-usuario/statstriker](https://github.com/tu-usuario/statstriker)
 
 ---
 

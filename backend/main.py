@@ -161,6 +161,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field("default", min_length=1, max_length=64, pattern=r"^[\w-]+$")
     match_context: ChatFixtureContext | None = None
     image: ChatImageAttachment | None = None
+    knowledge_context: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QuickAnalysisFixture(BaseModel):
@@ -879,7 +880,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     entity_matched = bool(matched_mock_ids)
-    context_quality = assess_context_quality(chunks, entity_matched, has_live_reports=bool(live_reports))
+    verified_articles = [k for k in (payload.knowledge_context or []) if isinstance(k, dict) and k.get("titulo")]
+    context_quality = assess_context_quality(chunks, entity_matched, has_live_reports=bool(live_reports or verified_articles))
 
     # 5) System Prompt dinámico + prompt de usuario con datos de últimos 5 partidos, RAG y memoria
     system_prompt, active_rules = build_system_prompt(
@@ -889,6 +891,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     )
     if live_reports and "ultimos_5_partidos" not in active_rules:
         active_rules.append("ultimos_5_partidos")
+    if verified_articles and "conocimiento_verificado" not in active_rules:
+        active_rules.append("conocimiento_verificado")
     sources = [c.to_source() for c in chunks]
     for rep in live_reports:
         sources.append({
@@ -898,6 +902,14 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             "category": "ultimos_5",
             "similarity": 1.0,
         })
+    for kb in verified_articles:
+        sources.append({
+            "id": f"kb::{kb.get('id', '')}",
+            "match_id": str(kb.get("id", "")),
+            "match": f"{kb.get('titulo')} ({kb.get('categoria', 'Base de conocimiento')})",
+            "category": "conocimiento_verificado",
+            "similarity": float(kb.get("similarity") or 0.85),
+        })
     history = database.get_history(payload.session_id, limit=settings.history_turns)
     user_prompt = build_user_prompt(
         message,
@@ -906,6 +918,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         analysis,
         live_reports=live_reports,
         mismatched_players=mismatched_players if not resolved_players else None,
+        verified_knowledge=verified_articles,
     )
     if payload.match_context:
         match = payload.match_context

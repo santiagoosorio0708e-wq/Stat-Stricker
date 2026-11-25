@@ -91,6 +91,7 @@ const RULE_LABELS = {
   mercado_doble_oportunidad: ["Doble oportunidad", "green"], mercado_over_under: ["Over/Under", "green"],
   mercado_btts: ["BTTS", "green"], mercado_handicap: ["Hándicap", "green"], mercado_corners: ["Córners", "green"],
   mercado_tarjetas: ["Tarjetas", "green"], ultimos_5_partidos: ["📊 Últimos 5P", "green"], estadisticas_jugador: ["🏃 Jugador", "green"], valor_cuota_objetiva: ["💎 Cuota objetiva", "yellow"], analisis_foto_apuesta: ["📸 Foto de apuesta", "yellow"],
+  conocimiento_verificado: ["📘 Conocimiento verificado", "green"], desajuste_jugador_partido: ["🔀 Contexto partido", "yellow"], alineaciones_y_rentabilidad: ["🧩 Alineaciones", "green"],
 };
 let selectedLeague = LEAGUES[0];
 let catalog = {};
@@ -311,14 +312,17 @@ function addTyping() {
   article.innerHTML = `<div class="msg__avatar">S</div><div class="msg__bubble"><div class="typing"><span></span><span></span><span></span></div><p class="muted">Buscando contexto y preparando el análisis…</p></div>`;
   els.messages.appendChild(article); scrollToBottom(); return article;
 }
-function addBotMessage({ answer, active_rules = [], sources = [] }, { isError = false, fixture = null, retryMessage = "" } = {}) {
+function addBotMessage({ answer, active_rules = [], sources = [], respuesta_id = null, calificacion = null, calificacion_comentario = "" }, { isError = false, fixture = null, retryMessage = "" } = {}) {
   const article = document.createElement("article"); article.className = `msg msg--bot${isError ? " msg--error" : ""}`;
   const rules = active_rules.filter((rule) => !["persona_tipster", "reglas_innegociables"].includes(rule));
   const sourceHtml = sources.length ? `<details><summary>Fuentes consultadas (${sources.length})</summary>${sources.map((source) => `<div class="source"><span>[${escapeHtml(source.category)}] ${escapeHtml(source.match)}</span><span class="bar" title="Similitud ${(source.similarity * 100).toFixed(0)}%"><span style="width:${(source.similarity * 100).toFixed(0)}%"></span></span></div>`).join("")}</details>` : "";
   const meta = !isError && (rules.length || sources.length) ? `<div class="msg__meta"><div class="row">${rules.map(ruleTag).join("")}</div>${sourceHtml}</div>` : "";
   const fixtureCard = fixture ? renderChatFixtureCard(fixture) : "";
   const retry = isError && retryMessage ? `<button class="chat-retry-button" type="button" data-retry-message="${escapeHtml(retryMessage)}">Reintentar solicitud</button>` : "";
-  article.innerHTML = `<div class="msg__avatar">${isError ? "!" : "S"}</div><div class="msg__bubble">${renderMarkdown(answer)}${fixtureCard}${meta}${retry}</div>`;
+  const ratingBar = !isError && respuesta_id != null
+    ? `<div class="msg-rating" data-response-id="${escapeHtml(String(respuesta_id))}"><span>Utilidad:</span><span class="msg-rating__stars">${[1, 2, 3, 4, 5].map((n) => `<button class="msg-rating__star${Number(calificacion) >= n ? " is-active" : ""}" type="button" data-rate-score="${n}" aria-label="Calificar ${n} de 5">★</button>`).join("")}</span><input class="msg-rating__comment" type="text" maxlength="200" placeholder="Comentario opcional…" value="${escapeHtml(calificacion_comentario || "")}" /><span class="msg-rating__status">${calificacion ? `${calificacion}/5 guardado` : ""}</span></div>`
+    : "";
+  article.innerHTML = `<div class="msg__avatar">${isError ? "!" : "S"}</div><div class="msg__bubble">${renderMarkdown(answer)}${fixtureCard}${meta}${ratingBar}${retry}</div>`;
   els.messages.appendChild(article); scrollToBottom();
 }
 
@@ -530,7 +534,14 @@ function renderTurnsList(turns) {
     addUserMessage(item.user_message, imgUrl);
     if (item.bot_response) {
       addBotMessage(
-        { answer: item.bot_response, active_rules: item.active_rules || [], sources: item.sources || [] },
+        {
+          answer: item.bot_response,
+          active_rules: item.active_rules || [],
+          sources: item.sources || [],
+          respuesta_id: item.respuesta_id ?? null,
+          calificacion: item.calificacion ?? null,
+          calificacion_comentario: item.calificacion_comentario || "",
+        },
         { isError: Boolean(item.isError), fixture: item.fixture ? restoreFixtureContext(item.fixture) : null },
       );
     }
@@ -823,6 +834,9 @@ async function sendMessage(text, { retry = false } = {}) {
     const completedTurn = {
       ...(idx >= 0 ? turnsNow[idx] : localTurn),
       id: data.id ?? null,
+      respuesta_id: data.respuesta_id ?? null,
+      calificacion: null,
+      calificacion_comentario: "",
       bot_response: data.answer || "",
       active_rules: data.active_rules || [],
       sources: data.sources || [],
@@ -830,7 +844,7 @@ async function sendMessage(text, { retry = false } = {}) {
         id: matchContext.id, home: matchContext.home, away: matchContext.away,
         homeLogo: matchContext.homeLogo, awayLogo: matchContext.awayLogo,
         competition: matchContext.competition,
-        time: matchContext.time?.toISOString() || "",
+        time: formatMatchKickoff(matchContext.time || matchContext.kickoff),
         status: matchContext.status,
       } : null,
       isError: false,
@@ -853,9 +867,36 @@ async function sendMessage(text, { retry = false } = {}) {
     if (sessionId === requestSessionId) { els.send.disabled = false; els.input.focus(); }
   }
 }
-els.messages.addEventListener("click", (event) => {
+els.messages.addEventListener("click", async (event) => {
   const img = event.target.closest(".msg__image");
   if (img) { openImageLightbox(img.src); return; }
+  const rateBtn = event.target.closest("[data-rate-score]");
+  if (rateBtn) {
+    const box = rateBtn.closest(".msg-rating");
+    const responseId = Number(box?.dataset.responseId);
+    const score = Number(rateBtn.dataset.rateScore);
+    const comment = box?.querySelector(".msg-rating__comment")?.value?.trim() || "";
+    const statusEl = box?.querySelector(".msg-rating__status");
+    if (!responseId || !score) return;
+    if (statusEl) statusEl.textContent = "Guardando…";
+    try {
+      await api("/api/chat/ratings", {
+        method: "POST",
+        body: JSON.stringify({ respuestaId: responseId, puntuacion: score, comentario: comment }),
+      });
+      box.querySelectorAll(".msg-rating__star").forEach((s) => s.classList.toggle("is-active", Number(s.dataset.rateScore) <= score));
+      if (statusEl) statusEl.textContent = `${score}/5 guardado`;
+      const turnsNow = await readLocalTurns(sessionId);
+      const tIdx = turnsNow.findIndex((t) => Number(t.respuesta_id) === responseId);
+      if (tIdx >= 0) {
+        turnsNow[tIdx] = { ...turnsNow[tIdx], calificacion: score, calificacion_comentario: comment };
+        await writeLocalTurns(sessionId, turnsNow);
+      }
+    } catch (err) {
+      if (statusEl) statusEl.textContent = err.message || "Error al guardar";
+    }
+    return;
+  }
   const retryButton = event.target.closest("[data-retry-message]");
   if (retryButton) sendMessage(retryButton.dataset.retryMessage, { retry: true });
 });
@@ -919,13 +960,15 @@ function setView(view) {
   const isLive = view === "live";
   const isUpcoming = view === "upcoming";
   const isAdvanced = view === "advanced";
+  const isManagement = view === "management";
   const isProfile = view === "profile";
   const viewSelect = $("#mobile-view-select");
   if (viewSelect) viewSelect.value = view;
-  $("#home-view").hidden = isLive || isUpcoming || isAdvanced || isProfile;
+  $("#home-view").hidden = isLive || isUpcoming || isAdvanced || isManagement || isProfile;
   $("#live-view").hidden = !isLive;
   $("#upcoming-view").hidden = !isUpcoming;
   $("#advanced-view").hidden = !isAdvanced;
+  if ($("#management-view")) $("#management-view").hidden = !isManagement;
   $("#profile-view").hidden = !isProfile;
   document.querySelectorAll(".main-nav [data-view]").forEach((link) => link.classList.toggle("active", link.dataset.view === view));
   document.querySelectorAll(".mobile-bottom-nav [data-view]").forEach((link) => {
@@ -943,7 +986,8 @@ function setView(view) {
     loadUpcomingFixtures();
     upcomingTimer = setInterval(loadUpcomingFixtures, 5 * 60_000);
   }
-  if (isAdvanced) { loadAnalytics(); loadFootballCharts(); }
+  if (isAdvanced) { loadAnalytics(); loadFootballCharts(); loadSqlAnalytics(); }
+  if (isManagement) { loadManagementView(); }
   if (isProfile) renderProfile();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1953,6 +1997,253 @@ document.addEventListener("error", (event) => {
   if (!(image instanceof HTMLImageElement) || !image.closest(".upcoming-view, .advanced-view, .profile-view, .league-list, #favorite-leagues")) return;
   const fallback = document.createElement("span"); fallback.className = "team-placeholder"; fallback.textContent = "⚽"; image.replaceWith(fallback);
 }, true);
+
+let mgmtMeta = { categories: [], users: [] };
+let mgmtCases = [];
+let mgmtArticles = [];
+async function ensureMgmtMeta() {
+  if (mgmtMeta.categories.length) return mgmtMeta;
+  try {
+    mgmtMeta = await api("/api/management/meta");
+    const catOpts = mgmtMeta.categories.map((c) => `<option value="${escapeHtml(String(c.id))}">${escapeHtml(c.nombre)}</option>`).join("");
+    ["#case-category", "#kb-category"].forEach((sel) => { const el = $(sel); if (el) el.innerHTML = catOpts; });
+    ["#case-filter-category", "#kb-filter-category", "#sql-filter-category"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.innerHTML = `<option value="">Todas las categorías</option>${catOpts}`;
+    });
+    const userSel = $("#case-user");
+    if (userSel) userSel.innerHTML = mgmtMeta.users.map((u) => `<option value="${escapeHtml(String(u.id))}">${escapeHtml(u.nombre)} (${escapeHtml(u.area)})</option>`).join("");
+  } catch { /* sin conexión JPA */ }
+  return mgmtMeta;
+}
+function renderSqlBarRows(host, rows, labelKey, valueKey, extraFn = () => "") {
+  if (!host) return;
+  if (!rows || !rows.length) { host.innerHTML = `<p class="detail-unavailable">Sin registros para este filtro.</p>`; return; }
+  const max = Math.max(1, ...rows.map((r) => Number(r[valueKey]) || 0));
+  host.innerHTML = rows.map((r) => {
+    const val = Number(r[valueKey]) || 0;
+    const pct = Math.max(4, Math.round(val / max * 100));
+    return `<div class="api-chart-row"><div class="api-chart-label"><span>${escapeHtml(String(r[labelKey] || "—"))}</span><strong>${escapeHtml(String(val))}${extraFn(r)}</strong></div><div class="api-chart-track"><i style="width:${pct}%"></i></div></div>`;
+  }).join("");
+}
+async function loadSqlAnalytics() {
+  const grid = $("#sql-kpi-grid");
+  if (!grid) return;
+  await ensureMgmtMeta();
+  const params = new URLSearchParams();
+  const from = $("#sql-filter-from")?.value || "";
+  const to = $("#sql-filter-to")?.value || "";
+  const cat = $("#sql-filter-category")?.value || "";
+  const prio = $("#sql-filter-priority")?.value || "ALL";
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (cat) params.set("categoriaId", cat);
+  if (prio && prio !== "ALL") params.set("prioridad", prio);
+  try {
+    const data = await api(`/api/analytics/sql?${params.toString()}`);
+    const s = data.summary || {};
+    grid.innerHTML = [
+      ["Casos registrados", s.total_casos ?? 0, `${s.casos_resueltos ?? 0} resueltos`],
+      ["% de resolución", `${s.porcentaje_resolucion ?? 0}%`, "Calculado vía SQL"],
+      ["Tiempo prom. atención", `${s.tiempo_promedio_horas ?? 0} h`, "Casos resueltos"],
+      ["Calificación IA", `${s.calificacion_promedio ?? 0} ★`, `${s.total_calificaciones ?? 0} evaluaciones`],
+      ["Consultas IA", s.total_consultas_ia ?? 0, `${s.consultas_respondidas ?? 0} respondidas`],
+      ["Conocimiento activo", s.articulos_activos ?? 0, `${s.articulos_inactivos ?? 0} inactivos`],
+    ].map(([label, val, sub]) => `<div class="sql-kpi"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(val))}</strong><small>${escapeHtml(String(sub))}</small></div>`).join("");
+    renderSqlBarRows($("#sql-category-chart"), data.by_category, "nombre", "total", (r) => ` (${r.pct_resolucion || 0}% res.)`);
+    renderSqlBarRows($("#sql-weekly-chart"), data.weekly_trend, "semana", "total", (r) => ` (${r.resueltos || 0} res.)`);
+    const iaRows = [
+      ...(data.ia_status_distribution || []).map((r) => ({ nombre: `Estado ${r.estado}`, total: r.total })),
+      ...(data.top_articles || []).map((r) => ({ nombre: `Fuente: ${r.titulo}`, total: r.usos })),
+    ];
+    renderSqlBarRows($("#sql-ia-chart"), iaRows, "nombre", "total");
+  } catch (err) {
+    grid.innerHTML = `<p class="detail-unavailable">${escapeHtml(err.message || "No se pudo consultar la analítica SQL.")}</p>`;
+  }
+}
+async function loadCases() {
+  const host = $("#cases-list");
+  if (!host) return;
+  const params = new URLSearchParams();
+  const q = $("#case-search")?.value?.trim() || "";
+  const cat = $("#case-filter-category")?.value || "";
+  const prio = $("#case-filter-priority")?.value || "ALL";
+  const status = $("#case-filter-status")?.value || "ALL";
+  if (q) params.set("q", q);
+  if (cat) params.set("categoriaId", cat);
+  if (prio !== "ALL") params.set("prioridad", prio);
+  if (status !== "ALL") params.set("estado", status);
+  try {
+    mgmtCases = await api(`/api/management/cases?${params.toString()}`);
+    host.innerHTML = mgmtCases.length ? mgmtCases.map((c) => `
+      <article class="mgmt-card" data-case-id="${c.id}">
+        <div class="mgmt-card-top">
+          <span class="mgmt-card-title">${escapeHtml(c.titulo)}</span>
+          <div class="mgmt-badges">
+            <span class="mgmt-badge">${escapeHtml(c.categoriaNombre)}</span>
+            <span class="mgmt-badge ${c.prioridad === "ALTA" ? "is-high" : ""}">${escapeHtml(c.prioridad)}</span>
+            <span class="mgmt-badge ${c.estado === "RESUELTO" || c.estado === "CERRADO" ? "is-ok" : ""}">${escapeHtml(c.estado)}</span>
+          </div>
+        </div>
+        <p class="mgmt-card-body">${escapeHtml(c.descripcion)}</p>
+        <div class="mgmt-card-meta">Responsable: ${escapeHtml(c.usuarioNombre)} · Creado: ${escapeHtml(String(c.fechaCreacion || "").slice(0, 16).replace("T", " "))}</div>
+        <div class="mgmt-actions">
+          <button class="mgmt-btn" type="button" data-edit-case="${c.id}">Editar</button>
+          ${c.estado !== "RESUELTO" ? `<button class="mgmt-btn" type="button" data-resolve-case="${c.id}">Marcar RESUELTO</button>` : ""}
+          <button class="mgmt-btn is-danger" type="button" data-delete-case="${c.id}">Eliminar</button>
+        </div>
+      </article>`).join("") : `<p class="detail-unavailable">No hay casos registrados con ese filtro.</p>`;
+  } catch (err) {
+    host.innerHTML = `<p class="detail-unavailable">${escapeHtml(err.message || "Error cargando casos.")}</p>`;
+  }
+}
+async function loadKnowledgeArticles() {
+  const host = $("#kb-list");
+  if (!host) return;
+  const params = new URLSearchParams();
+  const q = $("#kb-search")?.value?.trim() || "";
+  const cat = $("#kb-filter-category")?.value || "";
+  const act = $("#kb-filter-active")?.value || "";
+  if (q) params.set("q", q);
+  if (cat) params.set("categoriaId", cat);
+  if (act !== "") params.set("activo", act);
+  try {
+    mgmtArticles = await api(`/api/management/knowledge?${params.toString()}`);
+    host.innerHTML = mgmtArticles.length ? mgmtArticles.map((a) => `
+      <article class="mgmt-card ${a.activo ? "" : "is-inactive"}" data-kb-id="${a.id}">
+        <div class="mgmt-card-top">
+          <span class="mgmt-card-title">${escapeHtml(a.titulo)}</span>
+          <div class="mgmt-badges">
+            <span class="mgmt-badge">${escapeHtml(a.categoriaNombre)}</span>
+            <span class="mgmt-badge ${a.activo ? "is-ok" : "is-off"}">${a.activo ? "ACTIVO" : "INACTIVO"}</span>
+          </div>
+        </div>
+        <p class="mgmt-card-body"><strong>Problema:</strong> ${escapeHtml(a.problema)}<br><strong>Solución:</strong> ${escapeHtml(a.solucion)}</p>
+        <div class="mgmt-actions">
+          <button class="mgmt-btn" type="button" data-toggle-kb="${a.id}">${a.activo ? "Desactivar" : "Activar"}</button>
+          <button class="mgmt-btn" type="button" data-edit-kb="${a.id}">Editar</button>
+          <button class="mgmt-btn is-danger" type="button" data-delete-kb="${a.id}">Eliminar</button>
+        </div>
+      </article>`).join("") : `<p class="detail-unavailable">No hay artículos con ese filtro.</p>`;
+  } catch (err) {
+    host.innerHTML = `<p class="detail-unavailable">${escapeHtml(err.message || "Error cargando artículos.")}</p>`;
+  }
+}
+async function loadManagementView() {
+  await ensureMgmtMeta();
+  await Promise.all([loadCases(), loadKnowledgeArticles()]);
+}
+$("#sql-filter-apply")?.addEventListener("click", loadSqlAnalytics);
+$("#case-new-toggle")?.addEventListener("click", () => {
+  const f = $("#case-form");
+  if (!f) return;
+  f.reset();
+  $("#case-id").value = "";
+  f.hidden = !f.hidden;
+});
+$("#case-form-cancel")?.addEventListener("click", () => { if ($("#case-form")) $("#case-form").hidden = true; });
+$("#case-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = $("#case-id").value;
+  const payload = {
+    titulo: $("#case-title").value.trim(),
+    descripcion: $("#case-description").value.trim(),
+    categoriaId: Number($("#case-category").value),
+    prioridad: $("#case-priority").value,
+    estado: $("#case-status").value,
+    usuarioId: Number($("#case-user").value) || null,
+  };
+  await api(id ? `/api/management/cases/${id}` : "/api/management/cases", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+  $("#case-form").hidden = true;
+  await loadCases();
+});
+["#case-search", "#case-filter-category", "#case-filter-priority", "#case-filter-status"].forEach((s) => $(s)?.addEventListener("input", loadCases));
+$("#cases-list")?.addEventListener("click", async (e) => {
+  const editId = e.target.closest("[data-edit-case]")?.dataset.editCase;
+  if (editId) {
+    const c = mgmtCases.find((item) => String(item.id) === String(editId));
+    if (!c) return;
+    $("#case-id").value = c.id;
+    $("#case-title").value = c.titulo;
+    $("#case-description").value = c.descripcion;
+    $("#case-category").value = String(c.categoriaId);
+    $("#case-priority").value = c.prioridad;
+    $("#case-status").value = c.estado;
+    $("#case-user").value = String(c.usuarioId);
+    $("#case-form").hidden = false;
+    return;
+  }
+  const resolveId = e.target.closest("[data-resolve-case]")?.dataset.resolveCase;
+  if (resolveId) {
+    const c = mgmtCases.find((item) => String(item.id) === String(resolveId));
+    if (!c) return;
+    await api(`/api/management/cases/${c.id}`, { method: "PUT", body: JSON.stringify({ ...c, estado: "RESUELTO" }) });
+    await loadCases();
+    return;
+  }
+  const delId = e.target.closest("[data-delete-case]")?.dataset.deleteCase;
+  if (delId && confirm("¿Eliminar este caso?")) {
+    await api(`/api/management/cases/${delId}`, { method: "DELETE" });
+    await loadCases();
+  }
+});
+$("#kb-new-toggle")?.addEventListener("click", () => {
+  const f = $("#kb-form");
+  if (!f) return;
+  f.reset();
+  $("#kb-id").value = "";
+  $("#kb-active").checked = true;
+  $("#kb-verified").checked = true;
+  f.hidden = !f.hidden;
+});
+$("#kb-form-cancel")?.addEventListener("click", () => { if ($("#kb-form")) $("#kb-form").hidden = true; });
+$("#kb-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = $("#kb-id").value;
+  const payload = {
+    titulo: $("#kb-title").value.trim(),
+    categoriaId: Number($("#kb-category").value),
+    problema: $("#kb-problem").value.trim(),
+    sintomas: $("#kb-symptoms").value.trim(),
+    causa: $("#kb-cause").value.trim(),
+    solucion: $("#kb-solution").value.trim(),
+    activo: $("#kb-active").checked,
+    verificado: $("#kb-verified").checked,
+  };
+  await api(id ? `/api/management/knowledge/${id}` : "/api/management/knowledge", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+  $("#kb-form").hidden = true;
+  await loadKnowledgeArticles();
+});
+["#kb-search", "#kb-filter-category", "#kb-filter-active"].forEach((s) => $(s)?.addEventListener("input", loadKnowledgeArticles));
+$("#kb-list")?.addEventListener("click", async (e) => {
+  const toggleId = e.target.closest("[data-toggle-kb]")?.dataset.toggleKb;
+  if (toggleId) {
+    await api(`/api/management/knowledge/${toggleId}/toggle`, { method: "PATCH" });
+    await loadKnowledgeArticles();
+    return;
+  }
+  const editId = e.target.closest("[data-edit-kb]")?.dataset.editKb;
+  if (editId) {
+    const a = mgmtArticles.find((item) => String(item.id) === String(editId));
+    if (!a) return;
+    $("#kb-id").value = a.id;
+    $("#kb-title").value = a.titulo;
+    $("#kb-category").value = String(a.categoriaId);
+    $("#kb-problem").value = a.problema;
+    $("#kb-symptoms").value = a.sintomas;
+    $("#kb-cause").value = a.causa;
+    $("#kb-solution").value = a.solucion;
+    $("#kb-active").checked = Boolean(a.activo);
+    $("#kb-verified").checked = Boolean(a.verificado);
+    $("#kb-form").hidden = false;
+    return;
+  }
+  const delId = e.target.closest("[data-delete-kb]")?.dataset.deleteKb;
+  if (delId && confirm("¿Eliminar este artículo de conocimiento?")) {
+    await api(`/api/management/knowledge/${delId}`, { method: "DELETE" });
+    await loadKnowledgeArticles();
+  }
+});
 
 function hideSplashScreen() {
   const splash = $("#splash-screen");

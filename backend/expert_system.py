@@ -495,6 +495,7 @@ def build_user_prompt(
     analysis: QueryAnalysis,
     live_reports: list[dict[str, Any]] | None = None,
     mismatched_players: list[dict[str, Any]] | None = None,
+    verified_knowledge: list[dict[str, Any]] | None = None,
 ) -> str:
     """Construye el mensaje final que recibe el LLM."""
     parts: list[str] = []
@@ -507,6 +508,17 @@ def build_user_prompt(
             for m in mismatched_players
         ]
         parts.append("<desajuste_jugador>\n" + "\n".join(mm_lines) + "\n</desajuste_jugador>")
+
+    if verified_knowledge:
+        kb_blocks = [
+            f"- **{kb.get('titulo', 'Guía')}** [{kb.get('categoria', 'General')} · sim {float(kb.get('similarity') or 0.85):.2f}]:\n"
+            f"  Problema: {kb.get('problema', '')}\n"
+            f"  Síntomas: {kb.get('sintomas', '')}\n"
+            f"  Causa: {kb.get('causa', '')}\n"
+            f"  Solución recomendada: {kb.get('solucion', '')}"
+            for kb in verified_knowledge
+        ]
+        parts.append("<conocimiento_verificado>\n" + "\n".join(kb_blocks) + "\n</conocimiento_verificado>")
 
     if live_reports:
         parts.append(

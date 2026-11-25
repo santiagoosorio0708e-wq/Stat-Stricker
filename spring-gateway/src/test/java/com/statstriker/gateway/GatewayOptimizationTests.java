@@ -34,7 +34,10 @@ import org.springframework.web.client.RestClient;
 @Import(GatewayOptimizationTests.MockEngineConfig.class)
 @TestPropertySource(properties = {
     "statstriker.warmer-enabled=false",
-    "statstriker.ai-engine-url=http://ai-engine.test"
+    "statstriker.ai-engine-url=http://ai-engine.test",
+    "spring.datasource.url=jdbc:h2:mem:statstriker_test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1",
+    "spring.datasource.username=sa",
+    "spring.datasource.password="
 })
 class GatewayOptimizationTests {
 
@@ -225,6 +228,80 @@ class GatewayOptimizationTests {
             .andExpect(MockMvcResultMatchers.jsonPath("$[0].user_image_data").value("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="))
             .andExpect(MockMvcResultMatchers.jsonPath("$[0].user_image_mime").value("image/jpeg"))
             .andExpect(MockMvcResultMatchers.jsonPath("$[0].bot_response").value("Boleto analizado"));
+
+        mockServer.verify();
+    }
+
+    @Test
+    void crudKnowledgeToggleRatingsAndSqlAnalyticsWorkWithoutBreakingChat() throws Exception {
+        // 1) Analítica SQL inicial debe reflejar datos sembrados reales
+        mockMvc.perform(get("/api/analytics/sql"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.summary.total_casos").isNumber())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.by_category").isArray())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.weekly_trend").isArray());
+
+        // 2) Crear caso CRUD (RF01) y verificar filtro
+        String caseBody = """
+            {"titulo":"Prueba Liverpool vs Arsenal","descripcion":"Validar mercado BTTS","categoriaId":1,"prioridad":"ALTA","estado":"PENDIENTE","usuarioId":1}
+            """;
+        String createdCaseJson = mockMvc.perform(post("/api/management/cases")
+                .contentType(MediaType.APPLICATION_JSON).content(caseBody))
+            .andExpect(status().isCreated())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.estado").value("PENDIENTE"))
+            .andReturn().getResponse().getContentAsString();
+        assertThat(createdCaseJson).contains("Prueba Liverpool vs Arsenal");
+
+        // 3) Crear artículo de conocimiento activo, probar que se inyecta en /api/chat, luego desactivar y verificar que deja de enviarse (RF02)
+        String kbBody = """
+            {"titulo":"Guia Especial Corners Liverpool","problema":"Analizar corners en Anfield","sintomas":"corners anfield liverpool","causa":"juego por bandas","solucion":"Revisar promedio > 6.5 corners","categoriaId":1,"activo":true,"verificado":true}
+            """;
+        String kbCreated = mockMvc.perform(post("/api/management/knowledge")
+                .contentType(MediaType.APPLICATION_JSON).content(kbBody))
+            .andExpect(status().isCreated())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.activo").value(true))
+            .andReturn().getResponse().getContentAsString();
+        Number kbId = com.jayway.jsonpath.JsonPath.read(kbCreated, "$.id");
+
+        mockServer.expect(once(), requestTo("http://ai-engine.test/api/chat"))
+            .andExpect(method(HttpMethod.POST))
+            .andExpect(MockRestRequestMatchers.jsonPath("$.knowledge_context[0].titulo").value("Guia Especial Corners Liverpool"))
+            .andRespond(withSuccess("""
+                {"id":55,"answer":"Usando guia de corners","active_rules":["conocimiento_verificado"],"context_quality":"good","sources":[{"id":"kb::1","match":"Guia Especial Corners Liverpool","category":"conocimiento_verificado","similarity":0.9}],"analysis":{},"provider":"gemini:gemini-3.5-flash-lite"}
+                """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(once(), requestTo("http://ai-engine.test/api/chat"))
+            .andExpect(method(HttpMethod.POST))
+            .andExpect(MockRestRequestMatchers.jsonPath("$.knowledge_context").doesNotExist())
+            .andRespond(withSuccess("""
+                {"id":56,"answer":"Sin guia desactivada","active_rules":[],"context_quality":"low","sources":[],"analysis":{},"provider":"gemini:gemini-3.5-flash-lite"}
+                """, MediaType.APPLICATION_JSON));
+
+        String chatResp = mockMvc.perform(post("/api/chat")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"session_id\":\"s_kb\",\"message\":\"corners anfield liverpool\"}"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.respuesta_id").isNumber())
+            .andReturn().getResponse().getContentAsString();
+        Number respuestaId = com.jayway.jsonpath.JsonPath.read(chatResp, "$.respuesta_id");
+
+        // Calificar respuesta IA (RF08: 1..5)
+        mockMvc.perform(post("/api/chat/ratings")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"respuestaId\":" + respuestaId + ",\"puntuacion\":5,\"comentario\":\"Excelente guia\"}"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.puntuacion").value(5));
+
+        // Desactivar artículo y comprobar que NO vuelve a enviarse en knowledge_context
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/management/knowledge/" + kbId + "/toggle"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.activo").value(false));
+
+        mockMvc.perform(post("/api/chat")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"session_id\":\"s_kb\",\"message\":\"corners anfield liverpool\"}"))
+            .andExpect(status().isOk())
+            .andExpect(MockMvcResultMatchers.jsonPath("$.answer").value("Sin guia desactivada"));
 
         mockServer.verify();
     }
